@@ -1,8 +1,9 @@
 {
-	"$schema": "https://openapi.vercel.sh/vercel.json",
-	"framework": "nextjs",
-	"installCommand": "npm ci --workspace=apps/web",
-	"buildCommand": "npm run build:web",
-	"outputDirectory": "apps/web",
-	"ignoreCommand": "git diff --quiet HEAD^ HEAD -- apps/web/ package.json package-lock.json vercel.json .vercelignore"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rootDirectory": "apps/web",
+  "framework": "nextjs",
+  "installCommand": "cd ../.. && npm ci",
+  "buildCommand": "cd ../.. && npm run build:web",
+  "outputDirectory": ".next",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- apps/web/ package.json package-lock.json vercel.json .vercelignore"
 }
