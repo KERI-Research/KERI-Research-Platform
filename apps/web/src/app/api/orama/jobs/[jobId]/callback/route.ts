@@ -50,7 +50,7 @@ export async function POST(request: Request, context: JobCallbackContext) {
     return Response.json({ error: "Invalid job callback payload." }, { status: 400 });
   }
 
-  const job = applyJobCallback(jobId, body);
+  const job = await applyJobCallback(jobId, body);
 
   if (!job) {
     return Response.json({ error: "Job not found." }, { status: 404 });

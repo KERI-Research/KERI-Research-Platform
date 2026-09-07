@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   }
 
   // TODO: Persist dataset metadata and lineage in a real database once private upload finalization is implemented.
-  const response = completeUpload(body);
+  const response = await completeUpload(body);
 
   if (!response) {
     return Response.json({ error: "Unknown uploadId." }, { status: 404 });

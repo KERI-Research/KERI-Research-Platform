@@ -13,7 +13,7 @@ export async function GET(_request: Request, context: DownloadRouteContext) {
     return Response.json({ error: "jobId is required." }, { status: 400 });
   }
 
-  const job = getJob(jobId);
+  const job = await getJob(jobId);
 
   if (!job?.result) {
     return Response.json({ error: "No completed mock report is available for this job." }, { status: 404 });

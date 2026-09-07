@@ -14,7 +14,7 @@ export async function GET(_request: Request, context: JobRouteContext) {
     return Response.json({ error: "jobId is required." }, { status: 400 });
   }
 
-  const job = getAndAdvanceJob(jobId);
+  const job = await getAndAdvanceJob(jobId);
 
   if (!job) {
     return Response.json({ error: "Job not found." }, { status: 404 });
