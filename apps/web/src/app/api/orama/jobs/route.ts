@@ -24,7 +24,7 @@ function isValidBody(body: unknown): body is CreateJobRequest {
 
 export async function GET() {
   const response: JobsListResponse = {
-    jobs: listJobs(),
+    jobs: await listJobs(),
   };
 
   return Response.json(response);
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid job creation payload." }, { status: 400 });
   }
 
-  const job = createJob(body.datasetId, body.config);
+  const job = await createJob(body.datasetId, body.config);
 
   // TODO: Replace this in-memory queue with a real database record, then trigger the worker via
   // process.env.ORAMA_WORKER_URL using a server-side Authorization or x-orama-worker-secret header

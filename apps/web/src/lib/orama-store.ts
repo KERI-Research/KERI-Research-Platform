@@ -1,6 +1,11 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
+import { desc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
 import { buildMockJobResult } from "@/lib/orama-mocks";
+import { datasets, jobs, uploads } from "@/lib/schema";
 import type {
   AnalysisConfig,
   JobCallbackRequest,
@@ -9,56 +14,33 @@ import type {
   UploadInitiateRequest,
 } from "@/types/orama";
 
-interface UploadRecord {
-  uploadId: string;
-  filename: string;
-  contentType: string;
-  size: number;
-  createdAt: string;
-}
-
-interface DatasetRecord {
-  datasetId: string;
-  uploadId: string;
-  metadata: UploadCompleteRequest["metadata"];
-  createdAt: string;
-}
-
-type OramaGlobals = typeof globalThis & {
-  __oramaJobs__?: Map<string, JobRecord>;
-  __oramaUploads__?: Map<string, UploadRecord>;
-  __oramaDatasets__?: Map<string, DatasetRecord>;
-};
-
-const globalForOrama = globalThis as OramaGlobals;
-
-const jobs = globalForOrama.__oramaJobs__ ?? new Map<string, JobRecord>();
-const uploads = globalForOrama.__oramaUploads__ ?? new Map<string, UploadRecord>();
-const datasets = globalForOrama.__oramaDatasets__ ?? new Map<string, DatasetRecord>();
-
-globalForOrama.__oramaJobs__ = jobs;
-globalForOrama.__oramaUploads__ = uploads;
-globalForOrama.__oramaDatasets__ = datasets;
-
 function createId(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}_${randomUUID()}`;
 }
 
-function cloneJob(job: JobRecord): JobRecord {
-  return JSON.parse(JSON.stringify(job)) as JobRecord;
+function toJobRecord(row: typeof jobs.$inferSelect): JobRecord {
+  return {
+    jobId: row.jobId,
+    datasetId: row.datasetId,
+    status: row.status as JobRecord["status"],
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    pollCount: row.pollCount,
+    config: row.config as AnalysisConfig,
+    result: (row.result as JobRecord["result"] | null) ?? undefined,
+    errorMessage: row.errorMessage ?? undefined,
+  };
 }
 
-export function initiateUpload(payload: UploadInitiateRequest) {
+export async function initiateUpload(payload: UploadInitiateRequest) {
   const uploadId = createId("upl");
-  const record: UploadRecord = {
+
+  await db.insert(uploads).values({
     uploadId,
     filename: payload.filename,
     contentType: payload.contentType ?? "application/octet-stream",
     size: payload.size,
-    createdAt: new Date().toISOString(),
-  };
-
-  uploads.set(uploadId, record);
+  });
 
   return {
     uploadId,
@@ -67,8 +49,8 @@ export function initiateUpload(payload: UploadInitiateRequest) {
   };
 }
 
-export function completeUpload(payload: UploadCompleteRequest) {
-  const upload = uploads.get(payload.uploadId);
+export async function completeUpload(payload: UploadCompleteRequest) {
+  const [upload] = await db.select().from(uploads).where(eq(uploads.uploadId, payload.uploadId)).limit(1);
 
   if (!upload) {
     return null;
@@ -76,11 +58,10 @@ export function completeUpload(payload: UploadCompleteRequest) {
 
   const datasetId = createId("dataset");
 
-  datasets.set(datasetId, {
+  await db.insert(datasets).values({
     datasetId,
     uploadId: payload.uploadId,
     metadata: payload.metadata,
-    createdAt: new Date().toISOString(),
   });
 
   return {
@@ -89,70 +70,91 @@ export function completeUpload(payload: UploadCompleteRequest) {
   };
 }
 
-export function createJob(datasetId: string, config: AnalysisConfig): JobRecord {
-  const now = new Date().toISOString();
-  const job: JobRecord = {
-    jobId: createId("job"),
-    datasetId,
-    status: "QUEUED",
-    createdAt: now,
-    updatedAt: now,
-    pollCount: 0,
-    config,
-  };
+export async function createJob(datasetId: string, config: AnalysisConfig): Promise<JobRecord> {
+  const jobId = createId("job");
 
-  jobs.set(job.jobId, job);
-  return cloneJob(job);
+  const [row] = await db
+    .insert(jobs)
+    .values({
+      jobId,
+      datasetId,
+      status: "QUEUED",
+      config,
+      pollCount: 0,
+    })
+    .returning();
+
+  return toJobRecord(row);
 }
 
-export function listJobs(): JobRecord[] {
-  return Array.from(jobs.values())
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    .map(cloneJob);
+export async function listJobs(): Promise<JobRecord[]> {
+  const rows = await db.select().from(jobs).orderBy(desc(jobs.createdAt));
+  return rows.map(toJobRecord);
 }
 
-export function getJob(jobId: string): JobRecord | null {
-  const job = jobs.get(jobId);
-  return job ? cloneJob(job) : null;
+export async function getJob(jobId: string): Promise<JobRecord | null> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
+  return row ? toJobRecord(row) : null;
 }
 
-export function getAndAdvanceJob(jobId: string): JobRecord | null {
-  const job = jobs.get(jobId);
+export async function getAndAdvanceJob(jobId: string): Promise<JobRecord | null> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
 
-  if (!job) {
+  if (!row) {
     return null;
   }
 
-  if (job.status === "QUEUED" || job.status === "RUNNING") {
-    job.pollCount += 1;
-    job.updatedAt = new Date().toISOString();
-
-    if (job.pollCount >= 2) {
-      job.status = "RUNNING";
-    }
-
-    if (job.pollCount >= 4) {
-      job.status = "SUCCEEDED";
-      job.result ??= buildMockJobResult(job.jobId);
-    }
+  if (row.status !== "QUEUED" && row.status !== "RUNNING") {
+    return toJobRecord(row);
   }
 
-  jobs.set(jobId, job);
-  return cloneJob(job);
+  const pollCount = row.pollCount + 1;
+  let status = row.status;
+  let result = row.result;
+
+  if (pollCount >= 2) {
+    status = "RUNNING";
+  }
+
+  if (pollCount >= 4) {
+    status = "SUCCEEDED";
+    result = result ?? buildMockJobResult(row.jobId);
+  }
+
+  const [updated] = await db
+    .update(jobs)
+    .set({
+      pollCount,
+      status,
+      result,
+      updatedAt: new Date(),
+    })
+    .where(eq(jobs.jobId, jobId))
+    .returning();
+
+  return toJobRecord(updated);
 }
 
-export function applyJobCallback(jobId: string, payload: JobCallbackRequest): JobRecord | null {
-  const job = jobs.get(jobId);
+export async function applyJobCallback(jobId: string, payload: JobCallbackRequest): Promise<JobRecord | null> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
 
-  if (!job) {
+  if (!row) {
     return null;
   }
 
-  job.status = payload.status;
-  job.updatedAt = new Date().toISOString();
-  job.errorMessage = payload.errorMessage;
-  job.result = payload.result ?? job.result ?? (payload.status === "SUCCEEDED" ? buildMockJobResult(jobId) : undefined);
+  const result =
+    payload.result ?? row.result ?? (payload.status === "SUCCEEDED" ? buildMockJobResult(jobId) : undefined);
 
-  jobs.set(jobId, job);
-  return cloneJob(job);
+  const [updated] = await db
+    .update(jobs)
+    .set({
+      status: payload.status,
+      errorMessage: payload.errorMessage ?? null,
+      result,
+      updatedAt: new Date(),
+    })
+    .where(eq(jobs.jobId, jobId))
+    .returning();
+
+  return toJobRecord(updated);
 }
