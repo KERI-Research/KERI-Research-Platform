@@ -1,4 +1,6 @@
-Yes—build ORAMA as a **research-only, asynchronous ML platform**: Vercel hosts the UI and a thin orchestration API; a Hugging Face Space or dedicated Inference Endpoint performs the expensive validation, feature engineering, training, evaluation, and artefact generation. Do not run patient-level model training inside Vercel functions, and do not upload identifiable health records to a public Hub repository.
+# Plan for ORAMA
+
+To build ORAMA as a **research-only, asynchronous ML platform**: Vercel hosts the UI and a thin orchestration API; a Hugging Face Space or dedicated Inference Endpoint performs the expensive validation, feature engineering, training, evaluation, and artefact generation. Do not run patient-level model training inside Vercel functions, and do not upload identifiable health records to a public Hub repository.
 
 ORAMA’s core experiment should compare a static baseline against the same baseline augmented with within-person longitudinal trajectory features, using only pre-index data. The project is explicitly non-diagnostic: it should report research evidence, uncertainty, calibration and viability gates—not produce clinical decisions.[1][2]
 
