@@ -4,5 +4,8 @@
   "installCommand": "npm ci --workspace=apps/web",
   "buildCommand": "npm run build:web",
   "outputDirectory": "apps/web/.next",
+  "github": {
+    "silent": true
+  },
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- apps/web/ package.json package-lock.json vercel.json .vercelignore"
 }
