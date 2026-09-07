@@ -57,8 +57,8 @@ def build_trajectory_features(
 
     lookup = data_dictionary.set_index("variable_code").to_dict("index") if not data_dictionary.empty else {}
 
-    index_cols = cohort[["patient_id", "index_date", "feature_cutoff"]].copy()
-    index_cols["index_date"] = pd.to_datetime(index_cols["index_date"], utc=True, errors="coerce")
+    index_cols = cohort[["patient_id", "prediction_anchor_date", "feature_cutoff"]].copy()
+    index_cols["prediction_anchor_date"] = pd.to_datetime(index_cols["prediction_anchor_date"], utc=True, errors="coerce")
     index_cols["feature_cutoff"] = pd.to_datetime(index_cols["feature_cutoff"], utc=True, errors="coerce")
 
     obs = observations.copy()
@@ -122,7 +122,7 @@ def build_trajectory_features(
                 f"{prefix}direction_consistency": _direction_consistency(values),
                 f"{prefix}acceleration": acceleration,
                 f"{prefix}measurement_density_per_day": float(len(values) / max(span_days, 1.0)),
-                f"{prefix}time_since_last_observation_days": float((ordered['index_date'].iloc[0] - timestamps.iloc[-1]).total_seconds() / 86400.0),
+                f"{prefix}time_since_last_observation_days": float((ordered['prediction_anchor_date'].iloc[0] - timestamps.iloc[-1]).total_seconds() / 86400.0),
                 f"{prefix}mean": mean_value,
                 f"{prefix}median": median_value,
             }

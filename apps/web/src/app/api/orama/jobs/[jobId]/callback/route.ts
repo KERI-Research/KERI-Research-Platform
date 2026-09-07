@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { applyJobCallback } from "@/lib/orama-store";
 import type { JobCallbackRequest, JobStatusResponse } from "@/types/orama";
 
@@ -20,21 +21,35 @@ function isValidBody(body: unknown): body is JobCallbackRequest {
 
 export async function POST(request: Request, context: JobCallbackContext) {
   const { jobId } = await context.params;
-  const body: unknown = await request.json().catch(() => null);
 
   if (!jobId) {
     return Response.json({ error: "jobId is required." }, { status: 400 });
   }
 
+  const expectedWorkerSecret = process.env.ORAMA_WORKER_SHARED_SECRET;
+
+  if (!expectedWorkerSecret) {
+    return Response.json(
+      { error: "Worker shared secret is not configured." },
+      { status: 503 },
+    );
+  }
+
+  const workerSecretHeader = request.headers.get("x-orama-worker-secret");
+  const expectedSecretHash = createHash("sha256").update(expectedWorkerSecret).digest();
+  const providedSecretHash = createHash("sha256").update(workerSecretHeader ?? "").digest();
+
+  // This is a real server-side secret check now; ORAMA_WORKER_SHARED_SECRET stays server-only in app/api.
+  if (!workerSecretHeader || !timingSafeEqual(providedSecretHash, expectedSecretHash)) {
+    return Response.json({ error: "Invalid worker shared secret." }, { status: 401 });
+  }
+
+  const body: unknown = await request.json().catch(() => null);
+
   if (!isValidBody(body)) {
     return Response.json({ error: "Invalid job callback payload." }, { status: 400 });
   }
 
-  const workerSecretHeader = request.headers.get("x-orama-worker-secret");
-  void workerSecretHeader;
-
-  // TODO: Enforce comparison of x-orama-worker-secret against process.env.ORAMA_WORKER_SHARED_SECRET
-  // before accepting a real worker callback. The mock scaffold only documents the expected header shape.
   const job = applyJobCallback(jobId, body);
 
   if (!job) {

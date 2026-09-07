@@ -67,6 +67,27 @@ If the environment variable is missing, the app can fall back to the placeholder
 
 **That fallback is for local development only and is not appropriate for production or any internet-exposed deployment.**
 
+## Pipeline design: horizon-specific prediction anchors
+
+To avoid target/horizon leakage, the worker builds a **separate analysis frame per
+horizon** (default `[30, 90, 180, 365, 730]` days) rather than a single shared index date:
+
+- **Cases** (patients with a recorded outcome) anchor at
+  `prediction_anchor_date = outcome_date - horizon_days`, so the outcome always falls
+  exactly at the end of that horizon's window — never at day 0.
+- **Controls** (patients without a recorded outcome) anchor at an eligible pseudo
+  reference/follow-up date; any control whose outcome would fall inside a given horizon
+  window is excluded from that horizon rather than mislabeled.
+- All static, encounter, and trajectory features are derived only from data strictly
+  before `feature_cutoff = prediction_anchor_date - prediction_gap_days`.
+- Labels (`M0`–`M4` targets) are computed per horizon: positive only if the outcome occurs
+  strictly after the anchor and within that horizon; models never see outcome dates,
+  cohort labels, incident flags, or other outcome-derived columns as inputs.
+
+Unit tests in `tests/test_horizon_labels.py` and `tests/test_no_leakage.py` assert this
+boundary, horizon-specific labelling, outcome-free controls, and the absence of forbidden
+columns in the model feature matrices.
+
 ## Endpoints
 
 - `GET /health` — unauthenticated health check

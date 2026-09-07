@@ -125,8 +125,15 @@ or published, no Vercel project is created, and no data is sent anywhere.
   non-diagnostic" banner; the worker's reports carry the same disclaimer.
 - **No direct identifiers.** The upload UI warns against uploading direct identifiers and
   only ever previews client-side file metadata; it never persists or transmits file content.
-- **Leakage safeguards.** Trajectory features are only derived from observations strictly
-  before `index_date - prediction_gap_days`; unit tests assert this boundary.
+- **Leakage safeguards.** Each horizon builds its own analysis frame with a distinct
+  `prediction_anchor_date`: case patients anchor at `outcome_date - horizon`, control
+  patients anchor at an eligible pseudo reference date, and any control with an outcome
+  falling inside that horizon window is excluded rather than mislabeled. Every static,
+  encounter, and trajectory feature is derived only from data strictly before
+  `feature_cutoff = prediction_anchor_date - prediction_gap_days`, and no outcome-derived
+  columns (diagnosis/outcome dates, cohort labels, incident flags, treatment fields) ever
+  enter the model matrices. Unit tests assert horizon-specific labelling, the pre-cutoff
+  feature boundary, outcome-free controls, and the absence of forbidden columns.
 - **Split isolation.** Patient-level train/test splits guarantee no participant appears in
   both folds; unit tests assert this.
 - **Train-only preprocessing.** Imputation, scaling, and encoding are fit only on the

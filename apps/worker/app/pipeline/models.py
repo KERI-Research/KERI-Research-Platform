@@ -13,11 +13,21 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from app.pipeline.cohort import compute_first_history_at
 from app.pipeline.evaluate import compute_metrics, model_comparison_deltas
+from app.pipeline.index_dates import build_horizon_frame
 from app.pipeline.splits import patient_level_split
+from app.pipeline.static_features import build_static_measurement_features
+from app.pipeline.trajectories import build_trajectory_features
 
 MIN_SUFFICIENT_HISTORY_PATIENTS = 20
 MIN_HISTORY_MULTIPLIER = 2
+
+# Static (non-outcome-derived) participant/encounter columns that are safe to
+# feed into models. Any date, label, treatment, or cohort-assignment column
+# must never appear here: those are outcome-derived or directly leak case
+# status (for example `cohort_label`, `diagnosis_date`, `reference_date`).
+ALLOWED_STATIC_REFERENCE_COLUMNS = ["age", "sex", "encounter_count", "encounters_per_year", "history_days"]
 
 
 def check_viability(
@@ -87,12 +97,26 @@ def _static_feature_frame(
     cohort: pd.DataFrame,
     participants: pd.DataFrame,
     encounters: pd.DataFrame,
+    observations: pd.DataFrame,
 ) -> pd.DataFrame:
-    participant_frame = participants.copy()
-    encounter_frame = encounters.copy()
-    static = cohort[["patient_id", "history_days"]].copy()
+    """Build non-outcome-derived static features strictly before feature_cutoff.
+
+    Only demographic/utilisation fields and per-variable last-value/recency
+    features are included. Outcome-derived fields (``cohort_label``,
+    ``diagnosis_date``, ``reference_date``, labels, incident flags, and
+    treatment-related fields) must never enter this frame.
+    """
+
+    participant_frame = participants[["patient_id"]].copy()
+    if "age" in participants.columns:
+        participant_frame["age"] = participants["age"]
+    if "sex" in participants.columns:
+        participant_frame["sex"] = participants["sex"]
+
+    static = cohort[["patient_id", "feature_cutoff", "history_days"]].copy()
     static = static.merge(participant_frame, on="patient_id", how="left")
 
+    encounter_frame = encounters.copy()
     if not encounter_frame.empty:
         encounter_frame["encountered_at"] = pd.to_datetime(encounter_frame["encountered_at"], utc=True, errors="coerce")
         cutoff_frame = cohort[["patient_id", "feature_cutoff"]].copy()
@@ -107,30 +131,13 @@ def _static_feature_frame(
     static["encounter_count"] = static["encounter_count"].fillna(0)
     static["age"] = static.get("age", pd.Series(dtype=float)).astype(float)
     static["sex"] = static.get("sex", pd.Series(dtype=object)).fillna("unknown")
-    static["cohort_label"] = static.get("cohort_label", pd.Series(dtype=object)).fillna("synthetic")
     static["encounters_per_year"] = static["encounter_count"] / np.maximum(static["history_days"] / 365.0, 1e-6)
+    static = static.drop(columns=["feature_cutoff"])
+
+    measurement_features = build_static_measurement_features(cohort, observations)
+    static = static.merge(measurement_features, on="patient_id", how="left")
+
     return static.set_index("patient_id")
-
-
-def _labels_by_horizon(
-    cohort: pd.DataFrame,
-    outcomes: pd.DataFrame,
-    horizons: list[int],
-) -> dict[int, pd.Series]:
-    labels: dict[int, pd.Series] = {}
-    outcomes_frame = outcomes.copy()
-    outcomes_frame["outcome_at"] = pd.to_datetime(outcomes_frame["outcome_at"], utc=True, errors="coerce")
-
-    for horizon in horizons:
-        frame = cohort[["patient_id", "index_date"]].copy()
-        frame["index_date"] = pd.to_datetime(frame["index_date"], utc=True, errors="coerce")
-        merged = frame.merge(outcomes_frame[["patient_id", "outcome_at"]], on="patient_id", how="left")
-        merged["days_to_outcome"] = (merged["outcome_at"] - merged["index_date"]).dt.days
-        positive = merged.groupby("patient_id")["days_to_outcome"].apply(
-            lambda s: int(((s >= 0) & (s <= horizon)).any())
-        )
-        labels[horizon] = positive.reindex(frame["patient_id"]).fillna(0).astype(int)
-    return labels
 
 
 def _fit_single_model(
@@ -150,6 +157,18 @@ def _fit_single_model(
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "model_name": model_name,
+    }
+
+
+def _not_evaluable_result(horizon_days: int, reason: str) -> dict[str, Any]:
+    model_names = ["M0", "M1", "M2", "M3", "M4"]
+    return {
+        "horizon_days": horizon_days,
+        "viability": {"is_viable": False, "reason": reason},
+        "model_results": {name: {"status": "not_evaluable", "reason": reason, "metrics": {}} for name in model_names},
+        "comparison_deltas": {"M2_minus_M1_auroc": None, "M4_minus_M3_auroc": None, "M4_minus_M0_auroc": None},
+        "cohort_size": 0,
+        "exclusions": {},
     }
 
 
@@ -181,14 +200,15 @@ def fit_horizon_model_suite(
     static_features = static_features.copy()
     combined_features = static_features.join(trajectory_frame, how="left")
 
-    static_reference_columns = [
-        column
-        for column in ["age", "sex", "encounter_count", "encounters_per_year", "history_days", "cohort_label"]
-        if column in static_features.columns
-    ]
+    static_reference_columns = [column for column in ALLOWED_STATIC_REFERENCE_COLUMNS if column in static_features.columns]
     static_reference = static_features[static_reference_columns].copy()
 
-    train_ids, test_ids = patient_level_split(patient_ids, test_size=test_size, random_state=random_state)
+    train_ids, test_ids = patient_level_split(
+        patient_ids,
+        test_size=test_size,
+        random_state=random_state,
+        labels=labels.to_dict(),
+    )
     if not test_ids or len(set(labels.loc[train_ids])) < 2 or len(set(labels.loc[test_ids])) < 2:
         reason = "Patient-level split did not produce both classes in train and test folds."
         return {
@@ -245,30 +265,76 @@ def fit_horizon_model_suite(
 
 
 def train_comparison_models(
-    cohort: pd.DataFrame,
     participants: pd.DataFrame,
-    encounters: pd.DataFrame,
+    observations: pd.DataFrame,
     outcomes: pd.DataFrame,
-    trajectory_features: pd.DataFrame,
+    encounters: pd.DataFrame,
+    data_dictionary: pd.DataFrame,
     horizons: list[int],
+    prediction_gap_days: int,
+    min_history_days: int,
+    min_observations_per_variable: int,
     random_state: int = 42,
     test_size: float = 0.25,
-) -> dict[str, Any]:
-    """Train all comparison models across requested horizons."""
+) -> tuple[dict[str, Any], dict[str, dict[str, int]], dict[str, int], list[dict[str, Any]]]:
+    """Train all comparison models across requested horizons.
 
-    static_features = _static_feature_frame(cohort, participants, encounters)
-    label_map = _labels_by_horizon(cohort, outcomes, horizons)
-    patient_ids = static_features.index.tolist()
+    Builds a distinct, horizon-specific analysis frame (prediction anchor,
+    feature cutoff, and label) for every horizon, so that features and labels
+    can never leak across horizons or use post-anchor information.
+
+    Returns ``(results_by_horizon, exclusions_by_horizon, cohort_size_by_horizon,
+    feature_manifest)``.
+    """
+
+    first_history = compute_first_history_at(observations, encounters)
 
     results: dict[str, Any] = {}
+    exclusions_by_horizon: dict[str, dict[str, int]] = {}
+    cohort_size_by_horizon: dict[str, int] = {}
+    feature_manifest: list[dict[str, Any]] = []
+
     for horizon in horizons:
-        results[str(horizon)] = fit_horizon_model_suite(
+        horizon_key = str(horizon)
+        cohort, exclusions = build_horizon_frame(
+            participants=participants,
+            outcomes=outcomes,
+            first_history=first_history,
+            horizon_days=horizon,
+            prediction_gap_days=prediction_gap_days,
+            min_history_days=min_history_days,
+        )
+        exclusions_by_horizon[horizon_key] = exclusions
+        cohort_size_by_horizon[horizon_key] = int(len(cohort))
+
+        if cohort.empty:
+            results[horizon_key] = _not_evaluable_result(horizon, "No eligible patients for this horizon.")
+            continue
+
+        trajectory_bundle = build_trajectory_features(
+            cohort=cohort,
+            observations=observations,
+            data_dictionary=data_dictionary,
+            min_observations_per_variable=min_observations_per_variable,
+        )
+        for entry in trajectory_bundle.feature_manifest:
+            feature_manifest.append({**entry, "horizon_days": horizon})
+
+        static_features = _static_feature_frame(cohort, participants, encounters, observations)
+        labels = cohort.set_index("patient_id")["label"]
+        patient_ids = cohort["patient_id"].tolist()
+
+        result = fit_horizon_model_suite(
             static_features=static_features,
-            trajectory_features=trajectory_features,
-            labels=label_map[horizon],
+            trajectory_features=trajectory_bundle.features,
+            labels=labels,
             patient_ids=patient_ids,
             horizon_days=horizon,
             random_state=random_state,
             test_size=test_size,
         )
-    return results
+        result["cohort_size"] = int(len(cohort))
+        result["exclusions"] = exclusions
+        results[horizon_key] = result
+
+    return results, exclusions_by_horizon, cohort_size_by_horizon, feature_manifest

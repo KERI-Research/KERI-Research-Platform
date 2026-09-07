@@ -23,13 +23,17 @@ def build_report_payload(
     *,
     job_id: str,
     config: AnalysisConfig,
-    cohort_size: int,
-    exclusions: dict[str, int],
+    cohort_size_by_horizon: dict[str, int],
+    exclusions_by_horizon: dict[str, dict[str, int]],
     horizon_results: dict[str, Any],
     feasibility: FeasibilityConclusion,
     feature_manifest: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build a structured report dictionary from pipeline outputs."""
+    """Build a structured report dictionary from pipeline outputs.
+
+    Cohort size and exclusions are horizon-specific: each horizon uses its own
+    prediction-anchor date and therefore its own eligible analysis population.
+    """
 
     return {
         "job_id": job_id,
@@ -39,8 +43,8 @@ def build_report_payload(
         },
         "configuration_hash": _configuration_hash(config),
         "cohort_flow": {
-            "eligible_cohort_size": cohort_size,
-            "exclusions": exclusions,
+            "eligible_cohort_size_by_horizon": cohort_size_by_horizon,
+            "exclusions_by_horizon": exclusions_by_horizon,
         },
         "analysis_decisions": {
             "prediction_gap_days": config.prediction_gap_days,
@@ -77,10 +81,12 @@ def build_markdown_report(report: dict[str, Any]) -> str:
         f"- Description: {report['dataset_provenance']['description']}",
         "",
         "## Cohort flow",
-        f"- Eligible cohort size: {report['cohort_flow']['eligible_cohort_size']}",
     ]
-    for reason, count in report["cohort_flow"]["exclusions"].items():
-        lines.append(f"- Excluded ({reason}): {count}")
+    for horizon, size in report["cohort_flow"]["eligible_cohort_size_by_horizon"].items():
+        lines.append(f"- Horizon {horizon} days eligible cohort size: {size}")
+    for horizon, exclusions in report["cohort_flow"]["exclusions_by_horizon"].items():
+        for reason, count in exclusions.items():
+            lines.append(f"- Horizon {horizon} days excluded ({reason}): {count}")
 
     lines.extend(
         [

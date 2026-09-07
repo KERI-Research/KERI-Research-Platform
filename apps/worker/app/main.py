@@ -7,13 +7,10 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
 
-from app.pipeline.cohort import build_cohort
 from app.pipeline.evaluate import feasibility_conclusion
-from app.pipeline.index_dates import compute_index_dates
 from app.pipeline.ingest import dataset_to_frames
 from app.pipeline.models import train_comparison_models
 from app.pipeline.reporting import build_markdown_report, build_report_payload
-from app.pipeline.trajectories import build_trajectory_features
 from app.pipeline.validation import SchemaValidationError, validate_frames
 from app.schemas import JobRequest, JobResult, JobStatus, JobStatusResponse
 from app.security import verify_shared_secret
@@ -42,32 +39,16 @@ def _run_pipeline(request: JobRequest) -> JobResult:
     frames = dataset_to_frames(request.dataset)
     validate_frames(frames)
 
-    index_dates = compute_index_dates(
+    horizon_results, exclusions_by_horizon, cohort_size_by_horizon, feature_manifest = train_comparison_models(
         participants=frames["participants"],
+        observations=frames["observations"],
         outcomes=frames["outcomes"],
-        prediction_gap_days=request.analysis_config.prediction_gap_days,
-    )
-    cohort, exclusions = build_cohort(
-        participants=frames["participants"],
-        observations=frames["observations"],
         encounters=frames["encounters"],
-        index_dates=index_dates,
-        min_history_days=request.analysis_config.min_history_days,
-    )
-
-    trajectory_bundle = build_trajectory_features(
-        cohort=cohort,
-        observations=frames["observations"],
         data_dictionary=frames["data_dictionary"],
-        min_observations_per_variable=request.analysis_config.min_observations_per_variable,
-    )
-    horizon_results = train_comparison_models(
-        cohort=cohort,
-        participants=frames["participants"],
-        encounters=frames["encounters"],
-        outcomes=frames["outcomes"],
-        trajectory_features=trajectory_bundle.features,
         horizons=request.analysis_config.horizons,
+        prediction_gap_days=request.analysis_config.prediction_gap_days,
+        min_history_days=request.analysis_config.min_history_days,
+        min_observations_per_variable=request.analysis_config.min_observations_per_variable,
         random_state=request.analysis_config.random_state,
         test_size=request.analysis_config.test_size,
     )
@@ -75,11 +56,11 @@ def _run_pipeline(request: JobRequest) -> JobResult:
     report_json = build_report_payload(
         job_id=request.job_id,
         config=request.analysis_config,
-        cohort_size=int(len(cohort)),
-        exclusions=exclusions,
+        cohort_size_by_horizon=cohort_size_by_horizon,
+        exclusions_by_horizon=exclusions_by_horizon,
         horizon_results=horizon_results,
         feasibility=feasibility,
-        feature_manifest=trajectory_bundle.feature_manifest,
+        feature_manifest=feature_manifest,
     )
     report_markdown = build_markdown_report(report_json)
     return JobResult(
