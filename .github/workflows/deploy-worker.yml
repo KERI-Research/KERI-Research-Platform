@@ -22,8 +22,9 @@ jobs:
           git config --global user.email "jordanbell321@gmail.com"
           git config --global user.name "Jay Bell"
 
-          # Clone the HF Space repo
-          git clone https://JayNightmare:${HF_TOKEN}@huggingface.co/spaces/JayNightmare/orama-worker hf-space
+          # HF deprecated password auth; token must be passed as the password
+          # with literal 'user' as the username (not your HF username)
+          git clone https://user:${HF_TOKEN}@huggingface.co/spaces/JayNightmare/orama-worker hf-space
 
           # Sync worker contents (Dockerfile, requirements.txt, app/)
           rsync -av --delete \
@@ -32,10 +33,14 @@ jobs:
             --exclude='.env*' \
             apps/worker/ hf-space/
 
-          # Copy the HF Space README as the root README.md
+          # Place HF Space README at root so HF reads YAML frontmatter correctly
           cp apps/worker/README_HF.md hf-space/README.md
 
           cd hf-space
+
+          # Ensure push also uses token (clone URL credentials don't persist to push)
+          git remote set-url origin https://user:${HF_TOKEN}@huggingface.co/spaces/JayNightmare/orama-worker
+
           git add -A
 
           # Only commit and push if there are actual changes
