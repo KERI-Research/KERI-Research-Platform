@@ -28,6 +28,46 @@ def feature_stability_hook(*_: Any, **__: Any) -> None:
     return None
 
 
+def bootstrap_ci(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    metric_fn: Any,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    random_state: int = 42,
+) -> tuple[float, float]:
+    """Return a percentile bootstrap CI for one prediction per patient."""
+
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    if len(y_true) != len(y_prob):
+        raise ValueError("y_true and y_prob must have the same length.")
+    if not 0 < ci < 1:
+        raise ValueError("ci must be between zero and one.")
+    if len(y_true) == 0:
+        return float("nan"), float("nan")
+
+    rng = np.random.default_rng(random_state)
+    scores: list[float] = []
+    for _ in range(n_bootstrap):
+        patient_indices = rng.integers(0, len(y_true), size=len(y_true))
+        sample_y_true = y_true[patient_indices]
+        if metric_fn in (roc_auc_score, average_precision_score) and len(np.unique(sample_y_true)) < 2:
+            continue
+        try:
+            score = float(metric_fn(sample_y_true, y_prob[patient_indices]))
+        except ValueError:
+            # Some metrics are undefined for a sample with only one class.
+            continue
+        if np.isfinite(score):
+            scores.append(score)
+
+    if not scores:
+        return float("nan"), float("nan")
+    alpha = (1 - ci) / 2
+    return tuple(float(value) for value in np.quantile(scores, [alpha, 1 - alpha]))
+
+
 def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, Any]:
     """Compute discrimination and calibration metrics when class balance allows."""
 
@@ -39,6 +79,9 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, Any]:
         "brier_score": None,
         "calibration_intercept": None,
         "calibration_slope": None,
+        "auroc_ci": [None, None],
+        "auprc_ci": [None, None],
+        "brier_ci": [None, None],
         "confidence_intervals": confidence_interval_hook(),
         "feature_stability": feature_stability_hook(),
     }
@@ -48,6 +91,13 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, Any]:
     metrics["auroc"] = float(roc_auc_score(y_true, y_prob))
     metrics["auprc"] = float(average_precision_score(y_true, y_prob))
     metrics["brier_score"] = float(brier_score_loss(y_true, y_prob))
+    for name, metric_fn in (
+        ("auroc_ci", roc_auc_score),
+        ("auprc_ci", average_precision_score),
+        ("brier_ci", brier_score_loss),
+    ):
+        lower, upper = bootstrap_ci(y_true, y_prob, metric_fn)
+        metrics[name] = [None, None] if np.isnan(lower) else [lower, upper]
     intercept, slope = calibration_intercept_slope(y_true, y_prob)
     metrics["calibration_intercept"] = intercept
     metrics["calibration_slope"] = slope

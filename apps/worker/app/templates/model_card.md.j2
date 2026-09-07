@@ -1,0 +1,35 @@
+# ORAMA Research Model Card
+
+> **Research use only — non-diagnostic.** This output is not clinically validated and must not be used for patient-care decisions.
+
+## Run details
+
+- Job ID: `{{ job_id }}`
+- Dataset ID: `{{ dataset_id }}`
+- Schema version: `{{ schema_version }}`
+- Run date: {{ run_date }}
+- Horizons (days): {{ horizons | join(", ") }}
+- Models: {{ model_names | join(", ") }}
+
+## Decision
+
+**{{ decision }}**
+{% for reason in decision_reasons %}
+- {{ reason }}
+{% endfor %}
+
+## Per-horizon metrics
+
+{% for horizon, horizon_result in results_by_horizon.items() %}
+### Horizon {{ horizon }} days
+
+| Model | Status | AUROC (95% CI) | AUPRC (95% CI) | Brier score (95% CI) |
+| --- | --- | --- | --- | --- |
+{% for model_name, model_result in horizon_result.model_results.items() %}
+| {{ model_name }} | {{ model_result.status }} | {{ model_result.metrics.auroc }} ({{ model_result.metrics.auroc_ci }}) | {{ model_result.metrics.auprc }} ({{ model_result.metrics.auprc_ci }}) | {{ model_result.metrics.brier_score }} ({{ model_result.metrics.brier_ci }}) |
+{% endfor %}
+{% endfor %}
+
+## Governance
+
+ORAMA reporting is limited to pseudonymised data and research feasibility analysis. No clinical deployment or diagnostic use is permitted.
