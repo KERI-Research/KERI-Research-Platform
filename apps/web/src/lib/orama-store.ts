@@ -3,7 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { buildMockJobResult } from "@/lib/orama-mocks";
 import { datasets, jobs, uploads } from "@/lib/schema";
 import type {
@@ -33,6 +33,7 @@ function toJobRecord(row: typeof jobs.$inferSelect): JobRecord {
 }
 
 export async function initiateUpload(payload: UploadInitiateRequest) {
+  const db = getDb();
   const uploadId = createId("upl");
 
   await db.insert(uploads).values({
@@ -50,6 +51,7 @@ export async function initiateUpload(payload: UploadInitiateRequest) {
 }
 
 export async function completeUpload(payload: UploadCompleteRequest) {
+  const db = getDb();
   const [upload] = await db.select().from(uploads).where(eq(uploads.uploadId, payload.uploadId)).limit(1);
 
   if (!upload) {
@@ -71,6 +73,7 @@ export async function completeUpload(payload: UploadCompleteRequest) {
 }
 
 export async function createJob(datasetId: string, config: AnalysisConfig): Promise<JobRecord> {
+  const db = getDb();
   const jobId = createId("job");
 
   const [row] = await db
@@ -88,16 +91,19 @@ export async function createJob(datasetId: string, config: AnalysisConfig): Prom
 }
 
 export async function listJobs(): Promise<JobRecord[]> {
+  const db = getDb();
   const rows = await db.select().from(jobs).orderBy(desc(jobs.createdAt));
   return rows.map(toJobRecord);
 }
 
 export async function getJob(jobId: string): Promise<JobRecord | null> {
+  const db = getDb();
   const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
   return row ? toJobRecord(row) : null;
 }
 
 export async function getAndAdvanceJob(jobId: string): Promise<JobRecord | null> {
+  const db = getDb();
   const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
 
   if (!row) {
@@ -136,6 +142,7 @@ export async function getAndAdvanceJob(jobId: string): Promise<JobRecord | null>
 }
 
 export async function applyJobCallback(jobId: string, payload: JobCallbackRequest): Promise<JobRecord | null> {
+  const db = getDb();
   const [row] = await db.select().from(jobs).where(eq(jobs.jobId, jobId)).limit(1);
 
   if (!row) {
