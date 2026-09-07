@@ -1,0 +1,7 @@
+# Vercel should only build apps/web (Next.js).
+# The Python worker runs on Hugging Face Spaces, not Vercel.
+apps/worker
+# Also ignore test artefacts
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
