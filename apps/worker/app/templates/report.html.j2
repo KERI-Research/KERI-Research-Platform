@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ORAMA Research Report</title>
+  <style>
+    body { color: #1f2937; font-family: Arial, sans-serif; line-height: 1.5; margin: 2rem auto; max-width: 1100px; }
+    .banner { background: #fef3c7; border: 1px solid #b45309; color: #92400e; font-weight: bold; padding: 1rem; }
+    .decision { border-left: 6px solid #b91c1c; margin: 1rem 0; padding: 1rem; }
+    table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: .5rem; text-align: left; }
+    th { background: #f3f4f6; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ORAMA Research Report</h1>
+    <div class="banner">Research use only — non-diagnostic</div>
+  </header>
+
+  <section>
+    <h2>Dataset provenance</h2>
+    <ul>
+      <li>Job ID: <code>{{ job_id }}</code></li>
+      <li>Dataset ID: <code>{{ dataset_id }}</code></li>
+      <li>Configuration hash: <code>{{ configuration_hash }}</code></li>
+      <li>Run date: {{ run_date }}</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Cohort flow and exclusions</h2>
+    {% for horizon, size in cohort_flow.eligible_cohort_size_by_horizon.items() %}
+      <h3>Horizon {{ horizon }} days</h3>
+      <p>Eligible cohort: {{ size }}</p>
+      <ul>{% for reason, count in cohort_flow.exclusions_by_horizon[horizon].items() %}<li>{{ reason }}: {{ count }}</li>{% endfor %}</ul>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>Static versus longitudinal comparison</h2>
+    <table><tr><th>Horizon</th><th>M2 − M1 AUROC</th><th>M4 − M3 AUROC</th></tr>
+    {% for horizon, horizon_result in results_by_horizon.items() %}
+      <tr><td>{{ horizon }}</td><td>{{ horizon_result.comparison_deltas.M2_minus_M1_auroc }}</td><td>{{ horizon_result.comparison_deltas.M4_minus_M3_auroc }}</td></tr>
+    {% endfor %}</table>
+  </section>
+
+  <section>
+    <h2>Calibration and bootstrap confidence intervals</h2>
+    <table><tr><th>Horizon</th><th>Model</th><th>Intercept</th><th>Slope</th><th>AUROC (95% CI)</th><th>AUPRC (95% CI)</th></tr>
+    {% for horizon, horizon_result in results_by_horizon.items() %}{% for name, model in horizon_result.model_results.items() %}
+      <tr><td>{{ horizon }}</td><td>{{ name }}</td><td>{{ model.metrics.calibration_intercept }}</td><td>{{ model.metrics.calibration_slope }}</td><td>{{ model.metrics.auroc }} {{ model.metrics.auroc_ci }}</td><td>{{ model.metrics.auprc }} {{ model.metrics.auprc_ci }}</td></tr>
+    {% endfor %}{% endfor %}</table>
+  </section>
+
+  <section>
+    <h2>SHAP feature importance</h2>
+    {% for horizon, horizon_result in results_by_horizon.items() %}
+      <h3>Horizon {{ horizon }} days (M4)</h3>
+      <ol>{% for feature in horizon_result.model_results.M4.shap_summary | default([]) %}<li>{{ feature.feature }}: {{ feature.mean_abs_shap }}</li>{% endfor %}</ol>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>Warnings</h2>
+    <ul><li>Sparse measurements may limit trajectory estimates.</li><li>Underpowered endpoints may make estimates unstable.</li><li>Utilisation features may introduce utilisation bias.</li></ul>
+  </section>
+
+  <section class="decision">
+    <h2>Decision: {{ decision }}</h2>
+    <ul>{% for reason in decision_reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+  </section>
+</body>
+</html>

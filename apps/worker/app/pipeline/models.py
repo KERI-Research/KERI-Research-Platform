@@ -7,11 +7,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBClassifier
 
 from app.pipeline.cohort import compute_first_history_at
 from app.pipeline.evaluate import compute_metrics, model_comparison_deltas
@@ -19,6 +19,7 @@ from app.pipeline.index_dates import build_horizon_frame
 from app.pipeline.splits import patient_level_split
 from app.pipeline.static_features import build_static_measurement_features
 from app.pipeline.trajectories import build_trajectory_features
+from app.pipeline.reporting import compute_shap_summary
 
 MIN_SUFFICIENT_HISTORY_PATIENTS = 20
 MIN_HISTORY_MULTIPLIER = 2
@@ -151,13 +152,16 @@ def _fit_single_model(
     pipeline = build_model_pipeline(model, X_train)
     pipeline.fit(X_train, y_train)
     y_prob = pipeline.predict_proba(X_test)[:, 1]
-    return {
+    result = {
         "status": "evaluated",
         "metrics": compute_metrics(y_test.to_numpy(), y_prob),
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "model_name": model_name,
     }
+    if model_name == "M4":
+        result["shap_summary"] = compute_shap_summary(pipeline, X_test)
+    return result
 
 
 def _not_evaluable_result(horizon_days: int, reason: str) -> dict[str, Any]:
@@ -221,6 +225,9 @@ def fit_horizon_model_suite(
             "comparison_deltas": {"M2_minus_M1_auroc": None, "M4_minus_M3_auroc": None, "M4_minus_M0_auroc": None},
         }
 
+    positive_count = int(labels.loc[train_ids].sum())
+    negative_count = len(train_ids) - positive_count
+    scale_pos_weight = negative_count / positive_count
     models = {
         "M0": (LogisticRegression(max_iter=2000, class_weight="balanced"), static_reference),
         "M1": (
@@ -243,8 +250,24 @@ def fit_horizon_model_suite(
             ),
             combined_features,
         ),
-        "M3": (GradientBoostingClassifier(random_state=random_state), static_features),
-        "M4": (GradientBoostingClassifier(random_state=random_state), combined_features),
+        "M3": (
+            XGBClassifier(
+                use_label_encoder=False,
+                eval_metric="logloss",
+                random_state=random_state,
+                scale_pos_weight=scale_pos_weight,
+            ),
+            static_features,
+        ),
+        "M4": (
+            XGBClassifier(
+                use_label_encoder=False,
+                eval_metric="logloss",
+                random_state=random_state,
+                scale_pos_weight=scale_pos_weight,
+            ),
+            combined_features,
+        ),
     }
 
     model_results: dict[str, Any] = {}

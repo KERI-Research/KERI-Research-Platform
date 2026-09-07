@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from jinja2 import Environment, FileSystemLoader
 
 from app.schemas import AnalysisConfig, FeasibilityConclusion
 
@@ -12,6 +16,61 @@ DISCLAIMER = (
     "Research use only. Synthetic data only. Non-diagnostic. "
     "Not clinically validated and not for patient-care decisions."
 )
+TEMPLATES_DIRECTORY = Path(__file__).parent.parent / "templates"
+
+
+def compute_shap_summary(fitted_model: Any, X_test: Any) -> list[dict[str, float | str]]:
+    """Return M4's top test-set feature importances when SHAP is installed."""
+
+    try:
+        import shap
+    except ImportError:
+        return []
+
+    preprocessor = fitted_model.named_steps["preprocessor"]
+    model = fitted_model.named_steps["model"]
+    shap_values = shap.TreeExplainer(model).shap_values(preprocessor.transform(X_test))
+    if isinstance(shap_values, list):
+        shap_values = shap_values[-1]
+    mean_abs_shap = abs(shap_values).mean(axis=0)
+    feature_names = preprocessor.get_feature_names_out()
+    ranked = sorted(zip(feature_names, mean_abs_shap), key=lambda item: item[1], reverse=True)[:20]
+    return [{"feature": str(feature), "mean_abs_shap": float(value)} for feature, value in ranked]
+
+
+def _template_context(result: dict[str, Any]) -> dict[str, Any]:
+    decisions = result.get("analysis_decisions", {})
+    results_by_horizon = result.get("results_by_horizon", result.get("metrics_per_model_horizon", {}))
+    return {
+        "job_id": result.get("job_id"),
+        "dataset_id": result.get("dataset_id", "inline-synthetic-dataset"),
+        "schema_version": result.get("schema_version", "0.1"),
+        "run_date": result.get("run_date", datetime.now(timezone.utc).isoformat()),
+        "horizons": decisions.get("requested_horizons", list(results_by_horizon)),
+        "model_names": ["M0", "M1", "M2", "M3", "M4"],
+        "decision": decisions.get("feasibility_conclusion", result.get("decision", "NOT_EVALUABLE")),
+        "decision_reasons": result.get("decision_reasons", result.get("limitations", [])),
+        "results_by_horizon": results_by_horizon,
+        "cohort_flow": result.get("cohort_flow", {}),
+        "configuration_hash": result.get("configuration_hash"),
+    }
+
+
+def _render_template(template_name: str, result: dict[str, Any]) -> str:
+    environment = Environment(loader=FileSystemLoader(TEMPLATES_DIRECTORY), autoescape=template_name.endswith(".html.j2"))
+    return environment.get_template(template_name).render(**_template_context(result))
+
+
+def render_model_card(result: dict[str, Any]) -> str:
+    """Render the Markdown model card from a report payload."""
+
+    return _render_template("model_card.md.j2", result)
+
+
+def render_html_report(result: dict[str, Any]) -> str:
+    """Render the HTML research report from a report payload."""
+
+    return _render_template("report.html.j2", result)
 
 
 def _configuration_hash(config: AnalysisConfig) -> str:
