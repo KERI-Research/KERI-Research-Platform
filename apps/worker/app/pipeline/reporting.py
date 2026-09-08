@@ -19,7 +19,9 @@ DISCLAIMER = (
 TEMPLATES_DIRECTORY = Path(__file__).parent.parent / "templates"
 
 
-def compute_shap_summary(fitted_model: Any, X_test: Any) -> list[dict[str, float | str]]:
+def compute_shap_summary(
+    fitted_model: Any, X_test: Any
+) -> list[dict[str, float | str]]:
     """Return M4's top test-set feature importances when SHAP is installed."""
 
     try:
@@ -34,22 +36,33 @@ def compute_shap_summary(fitted_model: Any, X_test: Any) -> list[dict[str, float
         shap_values = shap_values[-1]
     mean_abs_shap = abs(shap_values).mean(axis=0)
     feature_names = preprocessor.get_feature_names_out()
-    ranked = sorted(zip(feature_names, mean_abs_shap), key=lambda item: item[1], reverse=True)[:20]
-    return [{"feature": str(feature), "mean_abs_shap": float(value)} for feature, value in ranked]
+    ranked = sorted(
+        zip(feature_names, mean_abs_shap), key=lambda item: item[1], reverse=True
+    )[:20]
+    return [
+        {"feature": str(feature), "mean_abs_shap": float(value)}
+        for feature, value in ranked
+    ]
 
 
 def _template_context(result: dict[str, Any]) -> dict[str, Any]:
     decisions = result.get("analysis_decisions", {})
-    results_by_horizon = result.get("results_by_horizon", result.get("metrics_per_model_horizon", {}))
+    results_by_horizon = result.get(
+        "results_by_horizon", result.get("metrics_per_model_horizon", {})
+    )
     return {
         "job_id": result.get("job_id"),
         "dataset_id": result.get("dataset_id", "inline-synthetic-dataset"),
         "schema_version": result.get("schema_version", "0.1"),
         "run_date": result.get("run_date", datetime.now(timezone.utc).isoformat()),
         "horizons": decisions.get("requested_horizons", list(results_by_horizon)),
-        "model_names": ["M0", "M1", "M2", "M3", "M4"],
-        "decision": decisions.get("feasibility_conclusion", result.get("decision", "NOT_EVALUABLE")),
-        "decision_reasons": result.get("decision_reasons", result.get("limitations", [])),
+        "model_names": ["M0", "M1", "M2", "M3", "M4", "M5"],
+        "decision": decisions.get(
+            "feasibility_conclusion", result.get("decision", "NOT_EVALUABLE")
+        ),
+        "decision_reasons": result.get(
+            "decision_reasons", result.get("limitations", [])
+        ),
         "results_by_horizon": results_by_horizon,
         "cohort_flow": result.get("cohort_flow", {}),
         "configuration_hash": result.get("configuration_hash"),
@@ -57,7 +70,10 @@ def _template_context(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_template(template_name: str, result: dict[str, Any]) -> str:
-    environment = Environment(loader=FileSystemLoader(TEMPLATES_DIRECTORY), autoescape=template_name.endswith(".html.j2"))
+    environment = Environment(
+        loader=FileSystemLoader(TEMPLATES_DIRECTORY),
+        autoescape=template_name.endswith(".html.j2"),
+    )
     return environment.get_template(template_name).render(**_template_context(result))
 
 
@@ -74,18 +90,22 @@ def render_html_report(result: dict[str, Any]) -> str:
 
 
 def _configuration_hash(config: AnalysisConfig) -> str:
-    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        config.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def build_report_payload(
     *,
     job_id: str,
+    dataset_id: str | None,
     config: AnalysisConfig,
     cohort_size_by_horizon: dict[str, int],
     exclusions_by_horizon: dict[str, dict[str, int]],
     horizon_results: dict[str, Any],
     feasibility: FeasibilityConclusion,
+    decision_reasons: list[str],
     feature_manifest: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Build a structured report dictionary from pipeline outputs.
@@ -96,9 +116,14 @@ def build_report_payload(
 
     return {
         "job_id": job_id,
+        "dataset_id": dataset_id or "inline-synthetic-dataset",
         "dataset_provenance": {
             "synthetic_only": True,
-            "description": "Inline synthetic scaffold payload for longitudinal feasibility research.",
+            "description": (
+                "Private synthetic research dataset object for longitudinal feasibility research."
+                if dataset_id
+                else "Inline synthetic scaffold payload for longitudinal feasibility research."
+            ),
         },
         "configuration_hash": _configuration_hash(config),
         "cohort_flow": {
@@ -111,7 +136,11 @@ def build_report_payload(
             "min_observations_per_variable": config.min_observations_per_variable,
             "requested_horizons": config.horizons,
             "feasibility_conclusion": feasibility.value,
+            "decision_reasons": decision_reasons,
+            "external_validation_required": feasibility
+            == FeasibilityConclusion.GO_FOR_EXTERNAL_VALIDATION,
         },
+        "decision_reasons": decision_reasons,
         "metrics_per_model_horizon": horizon_results,
         "trajectory_vs_static_comparison": {
             horizon: result.get("comparison_deltas", {})
@@ -141,7 +170,9 @@ def build_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## Cohort flow",
     ]
-    for horizon, size in report["cohort_flow"]["eligible_cohort_size_by_horizon"].items():
+    for horizon, size in report["cohort_flow"][
+        "eligible_cohort_size_by_horizon"
+    ].items():
         lines.append(f"- Horizon {horizon} days eligible cohort size: {size}")
     for horizon, exclusions in report["cohort_flow"]["exclusions_by_horizon"].items():
         for reason, count in exclusions.items():
@@ -153,6 +184,11 @@ def build_markdown_report(report: dict[str, Any]) -> str:
             "## Analysis decisions",
             f"- Configuration hash: `{report['configuration_hash']}`",
             f"- Feasibility conclusion: **{report['analysis_decisions']['feasibility_conclusion']}**",
+            *[
+                f"- Decision reason: {reason}"
+                for reason in report["analysis_decisions"]["decision_reasons"]
+            ],
+            f"- External validation required: {report['analysis_decisions']['external_validation_required']}",
             f"- Prediction gap days: {report['analysis_decisions']['prediction_gap_days']}",
             f"- Minimum history days: {report['analysis_decisions']['min_history_days']}",
             f"- Minimum observations per variable: {report['analysis_decisions']['min_observations_per_variable']}",

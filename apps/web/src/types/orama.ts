@@ -97,6 +97,9 @@ export interface JobResult {
   comparison: TrajectoryComparisonRow[];
   warnings: string[];
   report: ResearchReport;
+  feasibilityDecision?: string;
+  decisionReasons?: string[];
+  artifactReferences?: string[];
 }
 
 export interface JobRecord {
@@ -107,6 +110,10 @@ export interface JobRecord {
   updatedAt: string;
   pollCount: number;
   config: AnalysisConfig;
+  configHash?: string;
+  analysisLockedAt?: string;
+  resultWritePrefix?: string;
+  retentionUntil?: string;
   result?: JobResult;
   errorMessage?: string;
 }
@@ -122,6 +129,7 @@ export interface JobsListResponse {
 export interface JobCallbackRequest {
   status: Exclude<JobStatus, "QUEUED" | "RUNNING">;
   result?: JobResult;
+  workerResult?: unknown;
   errorMessage?: string;
 }
 

@@ -14,29 +14,27 @@ This monorepo contains two deployable apps:
 
 ## What this scaffold demonstrates
 
-- A full **synthetic** job journey in the web dashboard: upload metadata preview → schema
-  mapping → validation → analysis configuration → polling job status → research report.
-- A functional worker pipeline that ingests synthetic participants/observations/outcomes/
-  encounters, builds trajectory features with strict pre-index-date cutoffs, fits a
-  five-model comparison (M0–M4, static vs. static+trajectory), and produces a conservative
-  GO/NO_GO/REDIRECT/NOT_EVALUABLE research feasibility conclusion plus JSON/Markdown reports.
+- A private synthetic job journey in the web dashboard: direct R2 upload → schema
+  validation → frozen analysis configuration → worker status polling → artifact-backed research report.
+- A functional worker pipeline that ingests private ZIP/CSV/Parquet contract uploads or inline test fixtures,
+  builds trajectory features with strict pre-index-date cutoffs, fits a six-model comparison
+  (M0–M5, static, trajectory-only, and combined), and produces a conservative
+  GO_FOR_EXTERNAL_VALIDATION/NO_GO/REDIRECT/NOT_EVALUABLE research conclusion plus stored reports.
 - Unit tests proving core safeguards: no post-index-date leakage into trajectory features,
   patient-level train/test isolation (no participant appears in both splits), preprocessing
   fit only on training folds, rejection of invalid/leaky schemas, and viability gating when
   data is insufficient.
 
-This is a **scaffold**: the web app's API routes are safe mocked adapters (in-memory stores,
-`TODO` integration seams) and are not wired to a real database, object storage, or the worker
-over the network yet. No external services are provisioned, no Hugging Face Space is created
-or published, no Vercel project is created, and nothing is deployed automatically by this
-repository.
+The web app persists upload, dataset, job, audit, retention, and result metadata in Postgres.
+Raw uploads and generated reports remain in private R2 storage; Vercel only requests narrowly scoped
+URLs from the authenticated worker. Deployment secrets and storage credentials are server-only.
 
 ## Repository layout
 
-```
+```text
 apps/
-  web/     Next.js dashboard + mocked App Router API routes (see apps/web/README.md)
-  worker/  FastAPI research pipeline worker (see apps/worker/README.md)
+  web/     Next.js dashboard + private App Router orchestration API (see apps/web/README.md)
+  worker/  FastAPI research pipeline and R2 access boundary (see apps/worker/README.md)
 ```
 
 ## Local development
@@ -86,11 +84,15 @@ browser, every `ORAMA_*` value must stay server-side):
 
 | Variable | Purpose |
 | --- | --- |
-| `ORAMA_DATABASE_URL` | Future database connection string for dataset/job metadata persistence |
-| `ORAMA_OBJECT_STORAGE_BUCKET` | Future private object storage bucket for uploaded datasets |
-| `ORAMA_OBJECT_STORAGE_ENDPOINT` | Future private object storage endpoint |
+| `ORAMA_DATABASE_URL` | Neon/Postgres URL for dataset, job, audit, and retention metadata |
+| `ORAMA_DATABASE_URL_UNPOOLED` | Direct Neon URL used only by Drizzle Kit migrations |
 | `ORAMA_WORKER_URL` | Base URL of the deployed worker (called only from server-side route handlers) |
 | `ORAMA_WORKER_SHARED_SECRET` | Shared secret sent to the worker's internal endpoints |
+| `ORAMA_APP_URL` | Canonical public ORAMA origin used to construct callback URLs |
+| `ORAMA_RESEARCH_ACCESS_TOKEN` | Production researcher session token; never expose as `NEXT_PUBLIC_*` |
+| `ORAMA_RESEARCH_ACTOR_ID` | Optional service-side audit actor label |
+| `ORAMA_RETENTION_DAYS` | Dataset and artifact retention period; defaults to 30 days |
+| `ORAMA_RETENTION_CRON_SECRET` or `CRON_SECRET` | Authorization for `POST /api/orama/retention/run` |
 | `NEXT_PUBLIC_APP_NAME` | Client-visible application name |
 
 **Worker environment variables:**
@@ -98,24 +100,19 @@ browser, every `ORAMA_*` value must stay server-side):
 | Variable | Purpose |
 | --- | --- |
 | `ORAMA_WORKER_SHARED_SECRET` | Expected value of the `X-Orama-Worker-Secret` header on internal endpoints |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | R2 credentials held only by the private worker |
+| `ORAMA_OBJECT_STORAGE_BUCKET` / `ORAMA_OBJECT_STORAGE_ENDPOINT` | Private R2 bucket configuration |
+| `ORAMA_VERCEL_URL` | Exact Vercel production origin permitted for worker callbacks |
 | `ORAMA_RUNTIME_ENV` | Set to `local`/`dev`/`test` to permit the placeholder shared secret for local development only |
 
-## Deployment topology (manual, not automated by this repo)
+## Deployment topology
 
-1. **Worker → private Hugging Face Docker Space.** Create a private Space with the Docker
-   SDK, push `apps/worker` contents, and set `ORAMA_WORKER_SHARED_SECRET` as a Space secret.
-   The container listens on port `7860` as required by HF Docker Spaces.
-2. **Web → Vercel project rooted at `apps/web`.** Configure the Vercel project's root
-   directory as `apps/web` (monorepo-aware build), and set the environment variables above
-   in the Vercel project settings (`ORAMA_WORKER_URL` pointing at the deployed Space,
-   `ORAMA_WORKER_SHARED_SECRET` matching the Space secret, plus database/object storage
-   values once those integrations are implemented).
-3. Wire the `TODO` seams in `apps/web/src/app/api/orama/**` to real private object storage,
-   a database, authentication, and the deployed worker before using this for anything beyond
-   local synthetic demonstration.
-
-This repository does **not** provision any of the above automatically — no Space is created
-or published, no Vercel project is created, and no data is sent anywhere.
+1. **Worker → private Hugging Face Docker Space.** Deploy `apps/worker`, configure the R2 and
+  callback secrets, and expose only the authenticated internal endpoints behind the custom worker origin.
+2. **Web → Vercel project rooted at `apps/web`.** Configure the database, worker URL, shared secret,
+  access token, and retention cron secret. Apply the Drizzle migrations before accepting uploads.
+3. **R2 CORS.** Allow only `https://orama.cerebrallab.org` to make `PUT` requests with the `Content-Type`
+  header. Do not configure wildcard origins or browser storage credentials.
 
 ## Governance and safety controls
 
@@ -123,8 +120,8 @@ or published, no Vercel project is created, and no data is sent anywhere.
   records are included or referenced anywhere in this repository.
 - **Non-diagnostic by design.** The web app displays a persistent "research use only —
   non-diagnostic" banner; the worker's reports carry the same disclaimer.
-- **No direct identifiers.** The upload UI warns against uploading direct identifiers and
-  only ever previews client-side file metadata; it never persists or transmits file content.
+- **No direct identifiers.** The upload parser rejects direct-identifier columns, email-form patient IDs,
+  valid NHS-number patterns, unknown patient references, undocumented variables, and unit conflicts.
 - **Leakage safeguards.** Each horizon builds its own analysis frame with a distinct
   `prediction_anchor_date`: case patients anchor at `outcome_date - horizon`, control
   patients anchor at an eligible pseudo reference date, and any control with an outcome
@@ -140,13 +137,14 @@ or published, no Vercel project is created, and no data is sent anywhere.
   training fold via a single fitted `sklearn` `Pipeline`.
 - **Viability gating.** Models return `NOT_EVALUABLE` rather than an unreliable metric when
   outcomes, history, or horizon data are insufficient.
-- **Conservative conclusions.** The worker never reports a stronger conclusion than
-  `GO`/`NO_GO`/`REDIRECT`/`NOT_EVALUABLE`, and reports explicitly state they carry no
+- **Conservative conclusions.** The worker only reports `GO_FOR_EXTERNAL_VALIDATION` when discrimination,
+  calibration, trajectory stability, and subgroup gates pass; reports explicitly state they carry no
   clinical-validity claim.
+- **Retention and access.** Browser-facing APIs require a production research session; raw objects and output
+  artifacts are deleted by authorized manual or scheduled retention workflows while audit rows remain append-only.
 
 ## Limitations
 
-This scaffold is for internal research and engineering exploration only. It has not been
-clinically validated, does not implement real authentication or persistence, and must not be
-connected to real patient data or used to inform any clinical, screening, or treatment
-decision.
+This platform is for internal synthetic research and engineering exploration only. It has not been
+clinically validated and must not be connected to real patient data or used to inform any clinical,
+screening, or treatment decision.

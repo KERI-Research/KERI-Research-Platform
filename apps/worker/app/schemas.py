@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -64,22 +64,62 @@ class DatasetPayload(StrictModel):
 
 
 class AnalysisConfig(StrictModel):
-    horizons: list[int] = Field(default_factory=lambda: [30, 90, 180, 365, 730])
-    min_history_days: int = 365
-    min_observations_per_variable: int = 2
-    prediction_gap_days: int = 0
-    test_size: float = 0.25
-    random_state: int = 42
+    horizons: list[Annotated[int, Field(gt=0, le=3650)]] = Field(
+        default_factory=lambda: [30, 90, 180, 365, 730]
+    )
+    min_history_days: int = Field(default=365, ge=0, le=3650)
+    min_observations_per_variable: int = Field(default=2, ge=1, le=100)
+    prediction_gap_days: int = Field(default=0, ge=0, le=3650)
+    test_size: float = Field(default=0.25, gt=0, lt=0.5)
+    random_state: int = Field(default=42, ge=0)
+    analysis_locked: bool = False
+
+
+class StoragePresignRequest(StrictModel):
+    upload_id: str = Field(min_length=1, max_length=200)
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="application/octet-stream", max_length=255)
+
+
+class StoragePresignDownloadRequest(StrictModel):
+    object_key: str = Field(min_length=1, max_length=1024)
+
+
+class DatasetValidationRequest(StrictModel):
+    dataset_object_key: str = Field(min_length=1, max_length=1024)
+    dataset_filename: str = Field(min_length=1, max_length=255)
 
 
 class JobRequest(StrictModel):
     job_id: str
-    dataset: DatasetPayload
+    dataset_id: str | None = Field(default=None, max_length=255)
+    dataset: DatasetPayload | None = None
+    dataset_object_key: str | None = Field(default=None, max_length=1024)
+    dataset_filename: str | None = Field(default=None, max_length=255)
+    result_write_prefix: str | None = Field(default=None, max_length=1024)
+    callback_url: str | None = Field(default=None, max_length=2048)
+    config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     analysis_config: AnalysisConfig = Field(default_factory=AnalysisConfig)
+
+    @model_validator(mode="after")
+    def validate_dataset_source(self) -> "JobRequest":
+        has_inline_dataset = self.dataset is not None
+        has_storage_dataset = bool(self.dataset_object_key or self.dataset_filename)
+        if has_inline_dataset == has_storage_dataset:
+            raise ValueError(
+                "Provide exactly one dataset source: inline dataset or private object key and filename."
+            )
+        if has_storage_dataset and not (
+            self.dataset_object_key and self.dataset_filename
+        ):
+            raise ValueError(
+                "Private storage jobs require both dataset_object_key and dataset_filename."
+            )
+        return self
 
 
 class FeasibilityConclusion(str, Enum):
-    GO = "GO"
+    GO_FOR_EXTERNAL_VALIDATION = "GO_FOR_EXTERNAL_VALIDATION"
     NO_GO = "NO_GO"
     REDIRECT = "REDIRECT"
     NOT_EVALUABLE = "NOT_EVALUABLE"
@@ -101,6 +141,7 @@ class JobStateTransition(StrictModel):
 
 class JobResult(StrictModel):
     feasibility_conclusion: FeasibilityConclusion
+    decision_reasons: list[str] = Field(default_factory=list)
     metrics_by_horizon: dict[str, Any]
     report_json: dict[str, Any]
     report_markdown: str

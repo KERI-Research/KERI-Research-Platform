@@ -8,14 +8,20 @@ interface JobCallbackContext {
   }>;
 }
 
-function isValidBody(body: unknown): body is JobCallbackRequest {
+interface WorkerCallbackPayload {
+  status: JobCallbackRequest["status"];
+  worker_result?: unknown;
+  error_message?: unknown;
+}
+
+function isValidBody(body: unknown): body is WorkerCallbackPayload {
   const validStatuses = ["SUCCEEDED", "FAILED", "NOT_EVALUABLE"];
 
   return (
     typeof body === "object" &&
     body !== null &&
-    typeof (body as JobCallbackRequest).status === "string" &&
-    validStatuses.includes((body as JobCallbackRequest).status)
+    typeof (body as WorkerCallbackPayload).status === "string" &&
+    validStatuses.includes((body as WorkerCallbackPayload).status)
   );
 }
 
@@ -50,7 +56,11 @@ export async function POST(request: Request, context: JobCallbackContext) {
     return Response.json({ error: "Invalid job callback payload." }, { status: 400 });
   }
 
-  const job = await applyJobCallback(jobId, body);
+  const job = await applyJobCallback(jobId, {
+    status: body.status,
+    workerResult: body.worker_result,
+    errorMessage: typeof body.error_message === "string" ? body.error_message : undefined,
+  });
 
   if (!job) {
     return Response.json({ error: "Job not found." }, { status: 404 });

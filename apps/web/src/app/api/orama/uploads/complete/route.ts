@@ -1,4 +1,5 @@
 import { completeUpload } from "@/lib/orama-store";
+import { requireResearchAccess } from "@/lib/research-access";
 import type { UploadCompleteRequest, UploadCompleteResponse } from "@/types/orama";
 
 function isMetadataRecord(value: unknown): value is Record<string, string | number | boolean | null> {
@@ -21,13 +22,17 @@ function isValidBody(body: unknown): body is UploadCompleteRequest {
 }
 
 export async function POST(request: Request) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const body: unknown = await request.json().catch(() => null);
 
   if (!isValidBody(body)) {
     return Response.json({ error: "Invalid upload completion payload." }, { status: 400 });
   }
 
-  // TODO: Persist dataset metadata and lineage in a real database once private upload finalization is implemented.
   const response = await completeUpload(body);
 
   if (!response) {

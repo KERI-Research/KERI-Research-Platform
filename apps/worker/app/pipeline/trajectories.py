@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import linregress, theilslopes
 
+TRAJECTORY_WINDOW_DAYS = (30, 90, 365)
+
 
 @dataclass
 class TrajectoryFeatures:
@@ -36,12 +38,35 @@ def _direction_consistency(values: np.ndarray) -> float | None:
     return float(np.mean(signs == majority_sign))
 
 
-def _resolve_unit(dictionary_entry: dict[str, Any], ordered: pd.DataFrame) -> str | None:
+def _resolve_unit(
+    dictionary_entry: dict[str, Any], ordered: pd.DataFrame
+) -> str | None:
     if dictionary_entry.get("unit"):
         return str(dictionary_entry["unit"])
     if "unit" in ordered.columns and ordered["unit"].notna().any():
         return str(ordered["unit"].dropna().iloc[0])
     return None
+
+
+def _ols_slope_for_window(
+    ordered: pd.DataFrame,
+    feature_cutoff: pd.Timestamp,
+    window_days: int,
+    min_observations: int,
+) -> tuple[float | None, list[str]]:
+    """Calculate an OLS slope using only the trailing pre-cutoff observation window."""
+
+    window_start = pd.Timestamp(feature_cutoff) - pd.Timedelta(window_days, unit="D")
+    window = ordered.loc[ordered["observed_at"] >= window_start].copy()
+    if len(window) < max(2, min_observations):
+        return None, []
+
+    timestamps = window["observed_at"].reset_index(drop=True)
+    days = (timestamps - timestamps.iloc[0]).dt.total_seconds().to_numpy() / 86400.0
+    if np.allclose(days, days[0]):
+        return None, [timestamp.isoformat() for timestamp in timestamps.tolist()]
+    slope = float(linregress(days, window["value"].astype(float).to_numpy()).slope)
+    return slope, [timestamp.isoformat() for timestamp in timestamps.tolist()]
 
 
 def build_trajectory_features(
@@ -53,20 +78,37 @@ def build_trajectory_features(
     """Build per-patient trajectory features from observations strictly before feature cutoff."""
 
     if cohort.empty or observations.empty:
-        return TrajectoryFeatures(features=pd.DataFrame(columns=["patient_id"]), feature_manifest=[])
+        return TrajectoryFeatures(
+            features=pd.DataFrame(columns=["patient_id"]), feature_manifest=[]
+        )
 
-    lookup = data_dictionary.set_index("variable_code").to_dict("index") if not data_dictionary.empty else {}
+    lookup = (
+        data_dictionary.set_index("variable_code").to_dict("index")
+        if not data_dictionary.empty
+        else {}
+    )
 
-    index_cols = cohort[["patient_id", "prediction_anchor_date", "feature_cutoff"]].copy()
-    index_cols["prediction_anchor_date"] = pd.to_datetime(index_cols["prediction_anchor_date"], utc=True, errors="coerce")
-    index_cols["feature_cutoff"] = pd.to_datetime(index_cols["feature_cutoff"], utc=True, errors="coerce")
+    index_cols = cohort[
+        ["patient_id", "prediction_anchor_date", "feature_cutoff"]
+    ].copy()
+    index_cols["prediction_anchor_date"] = pd.to_datetime(
+        index_cols["prediction_anchor_date"], utc=True, errors="coerce"
+    )
+    index_cols["feature_cutoff"] = pd.to_datetime(
+        index_cols["feature_cutoff"], utc=True, errors="coerce"
+    )
 
     obs = observations.copy()
     obs["observed_at"] = pd.to_datetime(obs["observed_at"], utc=True, errors="coerce")
     eligible = obs.merge(index_cols, on="patient_id", how="inner")
     eligible = eligible.loc[eligible["observed_at"] < eligible["feature_cutoff"]].copy()
     if eligible.empty:
-        return TrajectoryFeatures(features=index_cols[["patient_id"]].drop_duplicates().reset_index(drop=True), feature_manifest=[])
+        return TrajectoryFeatures(
+            features=index_cols[["patient_id"]]
+            .drop_duplicates()
+            .reset_index(drop=True),
+            feature_manifest=[],
+        )
 
     wide_records: dict[str, dict[str, Any]] = {
         patient_id: {"patient_id": patient_id}
@@ -74,7 +116,9 @@ def build_trajectory_features(
     }
     feature_manifest: list[dict[str, Any]] = []
 
-    for (patient_id, variable_code), group in eligible.groupby(["patient_id", "variable_code"], sort=True):
+    for (patient_id, variable_code), group in eligible.groupby(
+        ["patient_id", "variable_code"], sort=True
+    ):
         ordered = group.sort_values("observed_at").reset_index(drop=True)
         if len(ordered) < min_observations_per_variable:
             continue
@@ -105,50 +149,102 @@ def build_trajectory_features(
 
         prefix = f"traj__{variable_code}__"
         record = wide_records.setdefault(patient_id, {"patient_id": patient_id})
-        record.update(
-            {
-                f"{prefix}first": first_value,
-                f"{prefix}last": last_value,
-                f"{prefix}absolute_change": float(last_value - first_value),
-                f"{prefix}relative_change": _safe_relative_change(first_value, last_value),
-                f"{prefix}ols_slope": ols_slope,
-                f"{prefix}robust_slope": robust_slope,
-                f"{prefix}recent_vs_historic_mean_delta": float(np.mean(recent_values) - np.mean(historic_values)) if len(recent_values) else 0.0,
-                f"{prefix}personal_baseline_deviation": float(last_value - baseline),
-                f"{prefix}max_deviation": float(np.max(np.abs(deviations))),
-                f"{prefix}variation_range": float(np.max(values) - np.min(values)),
-                f"{prefix}variation_std": float(np.std(values, ddof=0)),
-                f"{prefix}observation_count": int(len(values)),
-                f"{prefix}direction_consistency": _direction_consistency(values),
-                f"{prefix}acceleration": acceleration,
-                f"{prefix}measurement_density_per_day": float(len(values) / max(span_days, 1.0)),
-                f"{prefix}time_since_last_observation_days": float((ordered['prediction_anchor_date'].iloc[0] - timestamps.iloc[-1]).total_seconds() / 86400.0),
-                f"{prefix}mean": mean_value,
-                f"{prefix}median": median_value,
-            }
-        )
+        source_timestamps = [timestamp.isoformat() for timestamp in timestamps.tolist()]
+        feature_values = {
+            f"{prefix}first": first_value,
+            f"{prefix}last": last_value,
+            f"{prefix}absolute_change": float(last_value - first_value),
+            f"{prefix}relative_change": _safe_relative_change(first_value, last_value),
+            f"{prefix}ols_slope": ols_slope,
+            f"{prefix}robust_slope": robust_slope,
+            f"{prefix}recent_vs_historic_mean_delta": (
+                float(np.mean(recent_values) - np.mean(historic_values))
+                if len(recent_values)
+                else 0.0
+            ),
+            f"{prefix}personal_baseline_deviation": float(last_value - baseline),
+            f"{prefix}max_deviation": float(np.max(np.abs(deviations))),
+            f"{prefix}variation_range": float(np.max(values) - np.min(values)),
+            f"{prefix}variation_std": float(np.std(values, ddof=0)),
+            f"{prefix}observation_count": int(len(values)),
+            f"{prefix}direction_consistency": _direction_consistency(values),
+            f"{prefix}acceleration": acceleration,
+            f"{prefix}measurement_density_per_day": float(
+                len(values) / max(span_days, 1.0)
+            ),
+            f"{prefix}time_since_last_observation_days": float(
+                (
+                    ordered["prediction_anchor_date"].iloc[0] - timestamps.iloc[-1]
+                ).total_seconds()
+                / 86400.0
+            ),
+            f"{prefix}mean": mean_value,
+            f"{prefix}median": median_value,
+        }
+        feature_methods = {
+            "first": "first_valid_value",
+            "last": "last_valid_value",
+            "absolute_change": "last_minus_first",
+            "relative_change": "relative_last_minus_first",
+            "ols_slope": "ols_slope",
+            "robust_slope": "theil_sen_slope",
+            "recent_vs_historic_mean_delta": "recent_minus_historic_mean",
+            "personal_baseline_deviation": "last_minus_personal_baseline",
+            "max_deviation": "maximum_absolute_deviation_from_mean",
+            "variation_range": "range",
+            "variation_std": "standard_deviation",
+            "observation_count": "count",
+            "direction_consistency": "majority_direction_proportion",
+            "acceleration": "quadratic_acceleration",
+            "measurement_density_per_day": "count_per_day",
+            "time_since_last_observation_days": "anchor_minus_last_observation",
+            "mean": "mean",
+            "median": "median",
+        }
+
+        feature_source_timestamps: dict[str, list[str]] = {
+            feature_name: source_timestamps for feature_name in feature_values
+        }
+        feature_windows: dict[str, int | None] = {
+            feature_name: None for feature_name in feature_values
+        }
+        for window_days in TRAJECTORY_WINDOW_DAYS:
+            feature_name = f"{prefix}ols_slope_{window_days}d"
+            window_slope, window_timestamps = _ols_slope_for_window(
+                ordered,
+                ordered["feature_cutoff"].iloc[0],
+                window_days,
+                min_observations_per_variable,
+            )
+            feature_values[feature_name] = window_slope
+            feature_methods[feature_name.removeprefix(prefix)] = "ols_slope"
+            feature_source_timestamps[feature_name] = window_timestamps
+            feature_windows[feature_name] = window_days
+
+        record.update(feature_values)
 
         dictionary_entry = lookup.get(variable_code, {})
-        feature_manifest.append(
-            {
-                "patient_id": patient_id,
-                "source_variable": variable_code,
-                "unit": _resolve_unit(dictionary_entry, ordered),
-                "window": {
-                    "start": timestamps.iloc[0].isoformat(),
-                    "end": timestamps.iloc[-1].isoformat(),
-                },
-                "method": [
-                    "first_last_summary",
-                    "ols_slope",
-                    "theil_sen_slope",
-                    "historic_recent_delta",
-                    "direction_consistency",
-                    "acceleration_if_available",
-                ],
-                "source_timestamps_used": [timestamp.isoformat() for timestamp in timestamps.tolist()],
-            }
-        )
+        unit = _resolve_unit(dictionary_entry, ordered)
+        for feature_name, value in feature_values.items():
+            feature_suffix = feature_name.removeprefix(prefix)
+            feature_manifest.append(
+                {
+                    "feature": feature_name,
+                    "patient_id": patient_id,
+                    "source_variable": variable_code,
+                    "unit": unit,
+                    "window_days": feature_windows[feature_name],
+                    "method": feature_methods[feature_suffix],
+                    "pre_index_only": True,
+                    "minimum_observations": min_observations_per_variable,
+                    "source_timestamps_used": feature_source_timestamps[feature_name],
+                    "value_available": value is not None,
+                }
+            )
 
-    features = pd.DataFrame(list(wide_records.values())).sort_values("patient_id").reset_index(drop=True)
+    features = (
+        pd.DataFrame(list(wide_records.values()))
+        .sort_values("patient_id")
+        .reset_index(drop=True)
+    )
     return TrajectoryFeatures(features=features, feature_manifest=feature_manifest)

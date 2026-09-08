@@ -1,4 +1,5 @@
-import { createJob, listJobs } from "@/lib/orama-store";
+import { createJob, listJobs, queueJobForWorker } from "@/lib/orama-store";
+import { requireResearchAccess } from "@/lib/research-access";
 import type { AnalysisConfig, CreateJobRequest, CreateJobResponse, JobsListResponse } from "@/types/orama";
 
 function isAnalysisConfig(config: unknown): config is AnalysisConfig {
@@ -6,10 +7,16 @@ function isAnalysisConfig(config: unknown): config is AnalysisConfig {
     typeof config === "object" &&
     config !== null &&
     Array.isArray((config as AnalysisConfig).horizons) &&
-    (config as AnalysisConfig).horizons.every((value) => typeof value === "number" && Number.isFinite(value) && value > 0) &&
-    typeof (config as AnalysisConfig).min_history_days === "number" &&
-    typeof (config as AnalysisConfig).min_observations_per_variable === "number" &&
-    typeof (config as AnalysisConfig).prediction_gap_days === "number"
+    (config as AnalysisConfig).horizons.every((value) => Number.isInteger(value) && value > 0 && value <= 3650) &&
+    Number.isInteger((config as AnalysisConfig).min_history_days) &&
+    (config as AnalysisConfig).min_history_days >= 0 &&
+    (config as AnalysisConfig).min_history_days <= 3650 &&
+    Number.isInteger((config as AnalysisConfig).min_observations_per_variable) &&
+    (config as AnalysisConfig).min_observations_per_variable >= 1 &&
+    (config as AnalysisConfig).min_observations_per_variable <= 100 &&
+    Number.isInteger((config as AnalysisConfig).prediction_gap_days) &&
+    (config as AnalysisConfig).prediction_gap_days >= 0 &&
+    (config as AnalysisConfig).prediction_gap_days <= 3650
   );
 }
 
@@ -22,7 +29,12 @@ function isValidBody(body: unknown): body is CreateJobRequest {
   );
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const response: JobsListResponse = {
     jobs: await listJobs(),
   };
@@ -31,17 +43,20 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const body: unknown = await request.json().catch(() => null);
 
   if (!isValidBody(body)) {
     return Response.json({ error: "Invalid job creation payload." }, { status: 400 });
   }
 
-  const job = await createJob(body.datasetId, body.config);
+  const createdJob = await createJob(body.datasetId, body.config);
+  const job = await queueJobForWorker(createdJob);
 
-  // TODO: Replace this in-memory queue with a real database record, then trigger the worker via
-  // process.env.ORAMA_WORKER_URL using a server-side Authorization or x-orama-worker-secret header
-  // derived from process.env.ORAMA_WORKER_SHARED_SECRET. Never expose that secret to the client bundle.
   const response: CreateJobResponse = {
     jobId: job.jobId,
     status: job.status,

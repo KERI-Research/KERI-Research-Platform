@@ -11,10 +11,15 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.base import clone
 from xgboost import XGBClassifier
 
 from app.pipeline.cohort import compute_first_history_at
-from app.pipeline.evaluate import compute_metrics, model_comparison_deltas
+from app.pipeline.evaluate import (
+    compute_metrics,
+    model_comparison_deltas,
+    subgroup_metrics,
+)
 from app.pipeline.index_dates import build_horizon_frame
 from app.pipeline.splits import patient_level_split
 from app.pipeline.static_features import build_static_measurement_features
@@ -28,7 +33,14 @@ MIN_HISTORY_MULTIPLIER = 2
 # feed into models. Any date, label, treatment, or cohort-assignment column
 # must never appear here: those are outcome-derived or directly leak case
 # status (for example `cohort_label`, `diagnosis_date`, `reference_date`).
-ALLOWED_STATIC_REFERENCE_COLUMNS = ["age", "sex", "encounter_count", "encounters_per_year", "history_days"]
+ALLOWED_STATIC_REFERENCE_COLUMNS = [
+    "age",
+    "sex",
+    "encounter_count",
+    "encounters_per_year",
+    "history_days",
+]
+MODEL_NAMES = ["M0", "M1", "M2", "M3", "M4", "M5"]
 
 
 def check_viability(
@@ -41,8 +53,13 @@ def check_viability(
 
     if horizon_days <= 0:
         return False, "Horizon must be positive."
-    if n_with_sufficient_history < max(MIN_SUFFICIENT_HISTORY_PATIENTS, min_required * MIN_HISTORY_MULTIPLIER):
-        return False, "Too few patients with sufficient history for a stable comparison."
+    if n_with_sufficient_history < max(
+        MIN_SUFFICIENT_HISTORY_PATIENTS, min_required * MIN_HISTORY_MULTIPLIER
+    ):
+        return (
+            False,
+            "Too few patients with sufficient history for a stable comparison.",
+        )
     if n_outcomes < min_required:
         return False, "Too few positive outcomes for a stable feasibility estimate."
     return True, "Viable for synthetic feasibility modelling."
@@ -58,8 +75,14 @@ def _make_one_hot_encoder() -> OneHotEncoder:
 def build_preprocessor(feature_frame: pd.DataFrame) -> ColumnTransformer:
     """Build a preprocessing transformer fit only within a training pipeline."""
 
-    numeric_columns = [column for column in feature_frame.columns if pd.api.types.is_numeric_dtype(feature_frame[column])]
-    categorical_columns = [column for column in feature_frame.columns if column not in numeric_columns]
+    numeric_columns = [
+        column
+        for column in feature_frame.columns
+        if pd.api.types.is_numeric_dtype(feature_frame[column])
+    ]
+    categorical_columns = [
+        column for column in feature_frame.columns if column not in numeric_columns
+    ]
 
     numeric_pipeline = Pipeline(
         steps=[
@@ -119,12 +142,25 @@ def _static_feature_frame(
 
     encounter_frame = encounters.copy()
     if not encounter_frame.empty:
-        encounter_frame["encountered_at"] = pd.to_datetime(encounter_frame["encountered_at"], utc=True, errors="coerce")
+        encounter_frame["encountered_at"] = pd.to_datetime(
+            encounter_frame["encountered_at"], utc=True, errors="coerce"
+        )
         cutoff_frame = cohort[["patient_id", "feature_cutoff"]].copy()
-        cutoff_frame["feature_cutoff"] = pd.to_datetime(cutoff_frame["feature_cutoff"], utc=True, errors="coerce")
-        encounter_frame = encounter_frame.merge(cutoff_frame, on="patient_id", how="inner")
-        encounter_frame = encounter_frame.loc[encounter_frame["encountered_at"] < encounter_frame["feature_cutoff"]]
-        encounter_counts = encounter_frame.groupby("patient_id").size().rename("encounter_count").reset_index()
+        cutoff_frame["feature_cutoff"] = pd.to_datetime(
+            cutoff_frame["feature_cutoff"], utc=True, errors="coerce"
+        )
+        encounter_frame = encounter_frame.merge(
+            cutoff_frame, on="patient_id", how="inner"
+        )
+        encounter_frame = encounter_frame.loc[
+            encounter_frame["encountered_at"] < encounter_frame["feature_cutoff"]
+        ]
+        encounter_counts = (
+            encounter_frame.groupby("patient_id")
+            .size()
+            .rename("encounter_count")
+            .reset_index()
+        )
         static = static.merge(encounter_counts, on="patient_id", how="left")
     else:
         static["encounter_count"] = 0
@@ -132,13 +168,97 @@ def _static_feature_frame(
     static["encounter_count"] = static["encounter_count"].fillna(0)
     static["age"] = static.get("age", pd.Series(dtype=float)).astype(float)
     static["sex"] = static.get("sex", pd.Series(dtype=object)).fillna("unknown")
-    static["encounters_per_year"] = static["encounter_count"] / np.maximum(static["history_days"] / 365.0, 1e-6)
+    static["encounters_per_year"] = static["encounter_count"] / np.maximum(
+        static["history_days"] / 365.0, 1e-6
+    )
     static = static.drop(columns=["feature_cutoff"])
 
     measurement_features = build_static_measurement_features(cohort, observations)
     static = static.merge(measurement_features, on="patient_id", how="left")
 
     return static.set_index("patient_id")
+
+
+def _static_feature_manifest(static_features: pd.DataFrame) -> list[dict[str, Any]]:
+    """Describe every static-only feature exposed to the model suite."""
+
+    manifest: list[dict[str, Any]] = []
+    for feature_name in static_features.columns:
+        if feature_name.startswith("static__"):
+            _, source_variable, method = feature_name.split("__", maxsplit=2)
+            source = source_variable
+        elif feature_name in {"age", "sex"}:
+            source = "participants"
+            method = feature_name
+        elif feature_name in {"encounter_count", "encounters_per_year"}:
+            source = "encounters"
+            method = feature_name
+        else:
+            source = "cohort"
+            method = feature_name
+
+        manifest.append(
+            {
+                "feature": feature_name,
+                "feature_set": "static_only",
+                "source_variable": source,
+                "method": method,
+                "pre_index_only": True,
+            }
+        )
+    return manifest
+
+
+def _bootstrap_feature_stability(
+    pipeline: Pipeline,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    n_bootstrap: int = 50,
+    random_state: int = 42,
+) -> list[dict[str, Any]]:
+    """Estimate coefficient direction stability using development-only resamples."""
+
+    if len(X_train) < 2 or len(y_train.unique()) < 2:
+        return []
+
+    rng = np.random.default_rng(random_state)
+    summaries: dict[str, dict[str, int]] = {}
+    for _ in range(n_bootstrap):
+        sample_positions = rng.integers(0, len(X_train), size=len(X_train))
+        sample_y = y_train.iloc[sample_positions]
+        if len(sample_y.unique()) < 2:
+            continue
+
+        resampled = clone(pipeline)
+        resampled.fit(X_train.iloc[sample_positions], sample_y)
+        feature_names = resampled.named_steps["preprocessor"].get_feature_names_out()
+        coefficients = resampled.named_steps["model"].coef_.ravel()
+        for feature_name, coefficient in zip(feature_names, coefficients, strict=True):
+            if abs(float(coefficient)) < 1e-12:
+                continue
+            summary = summaries.setdefault(
+                str(feature_name), {"selected": 0, "positive": 0, "negative": 0}
+            )
+            summary["selected"] += 1
+            if coefficient > 0:
+                summary["positive"] += 1
+            else:
+                summary["negative"] += 1
+
+    return [
+        {
+            "feature": feature,
+            "selection_frequency": summary["selected"] / n_bootstrap,
+            "dominant_direction": (
+                "positive" if summary["positive"] >= summary["negative"] else "negative"
+            ),
+            "direction_consistency": max(summary["positive"], summary["negative"])
+            / summary["selected"],
+        }
+        for feature, summary in sorted(
+            summaries.items(), key=lambda item: item[1]["selected"], reverse=True
+        )[:20]
+    ]
 
 
 def _fit_single_model(
@@ -159,18 +279,32 @@ def _fit_single_model(
         "n_test": int(len(X_test)),
         "model_name": model_name,
     }
+    if "sex" in X_test.columns:
+        result["subgroup_metrics"] = subgroup_metrics(
+            y_test.to_numpy(), y_prob, {"sex": X_test["sex"].to_numpy()}
+        )
+    if model_name in {"M1", "M2", "M5"}:
+        result["feature_stability"] = _bootstrap_feature_stability(
+            pipeline, X_train, y_train
+        )
     if model_name == "M4":
         result["shap_summary"] = compute_shap_summary(pipeline, X_test)
     return result
 
 
 def _not_evaluable_result(horizon_days: int, reason: str) -> dict[str, Any]:
-    model_names = ["M0", "M1", "M2", "M3", "M4"]
     return {
         "horizon_days": horizon_days,
         "viability": {"is_viable": False, "reason": reason},
-        "model_results": {name: {"status": "not_evaluable", "reason": reason, "metrics": {}} for name in model_names},
-        "comparison_deltas": {"M2_minus_M1_auroc": None, "M4_minus_M3_auroc": None, "M4_minus_M0_auroc": None},
+        "model_results": {
+            name: {"status": "not_evaluable", "reason": reason, "metrics": {}}
+            for name in MODEL_NAMES
+        },
+        "comparison_deltas": {
+            "M2_minus_M1_auroc": None,
+            "M4_minus_M3_auroc": None,
+            "M4_minus_M0_auroc": None,
+        },
         "cohort_size": 0,
         "exclusions": {},
     }
@@ -188,23 +322,35 @@ def fit_horizon_model_suite(
     """Fit the five comparison models for one horizon, or return NOT_EVALUABLE results."""
 
     viable, reason = check_viability(int(labels.sum()), len(patient_ids), horizon_days)
-    model_names = ["M0", "M1", "M2", "M3", "M4"]
     if not viable:
         return {
             "horizon_days": horizon_days,
             "viability": {"is_viable": False, "reason": reason},
             "model_results": {
                 name: {"status": "not_evaluable", "reason": reason, "metrics": {}}
-                for name in model_names
+                for name in MODEL_NAMES
             },
-            "comparison_deltas": {"M2_minus_M1_auroc": None, "M4_minus_M3_auroc": None, "M4_minus_M0_auroc": None},
+            "comparison_deltas": {
+                "M2_minus_M1_auroc": None,
+                "M4_minus_M3_auroc": None,
+                "M4_minus_M0_auroc": None,
+            },
         }
 
-    trajectory_frame = trajectory_features.set_index("patient_id") if "patient_id" in trajectory_features.columns else trajectory_features.copy()
+    trajectory_frame = (
+        trajectory_features.set_index("patient_id")
+        if "patient_id" in trajectory_features.columns
+        else trajectory_features.copy()
+    )
     static_features = static_features.copy()
     combined_features = static_features.join(trajectory_frame, how="left")
+    trajectory_only_features = trajectory_frame.reindex(static_features.index)
 
-    static_reference_columns = [column for column in ALLOWED_STATIC_REFERENCE_COLUMNS if column in static_features.columns]
+    static_reference_columns = [
+        column
+        for column in ALLOWED_STATIC_REFERENCE_COLUMNS
+        if column in static_features.columns
+    ]
     static_reference = static_features[static_reference_columns].copy()
 
     train_ids, test_ids = patient_level_split(
@@ -213,23 +359,36 @@ def fit_horizon_model_suite(
         random_state=random_state,
         labels=labels.to_dict(),
     )
-    if not test_ids or len(set(labels.loc[train_ids])) < 2 or len(set(labels.loc[test_ids])) < 2:
-        reason = "Patient-level split did not produce both classes in train and test folds."
+    if (
+        not test_ids
+        or len(set(labels.loc[train_ids])) < 2
+        or len(set(labels.loc[test_ids])) < 2
+    ):
+        reason = (
+            "Patient-level split did not produce both classes in train and test folds."
+        )
         return {
             "horizon_days": horizon_days,
             "viability": {"is_viable": False, "reason": reason},
             "model_results": {
                 name: {"status": "not_evaluable", "reason": reason, "metrics": {}}
-                for name in model_names
+                for name in MODEL_NAMES
             },
-            "comparison_deltas": {"M2_minus_M1_auroc": None, "M4_minus_M3_auroc": None, "M4_minus_M0_auroc": None},
+            "comparison_deltas": {
+                "M2_minus_M1_auroc": None,
+                "M4_minus_M3_auroc": None,
+                "M4_minus_M0_auroc": None,
+            },
         }
 
     positive_count = int(labels.loc[train_ids].sum())
     negative_count = len(train_ids) - positive_count
     scale_pos_weight = negative_count / positive_count
     models = {
-        "M0": (LogisticRegression(max_iter=2000, class_weight="balanced"), static_reference),
+        "M0": (
+            LogisticRegression(max_iter=2000, class_weight="balanced"),
+            static_reference,
+        ),
         "M1": (
             LogisticRegression(
                 penalty="elasticnet",
@@ -271,13 +430,34 @@ def fit_horizon_model_suite(
     }
 
     model_results: dict[str, Any] = {}
+    if trajectory_only_features.shape[1] > 0:
+        models["M5"] = (
+            LogisticRegression(
+                penalty="elasticnet",
+                solver="saga",
+                l1_ratio=0.5,
+                max_iter=4000,
+                class_weight="balanced",
+            ),
+            trajectory_only_features,
+        )
+    else:
+        model_results["M5"] = {
+            "status": "not_evaluable",
+            "reason": "No eligible trajectory features were available for this horizon.",
+            "metrics": {},
+            "model_name": "M5",
+        }
+
     for model_name, (model, features) in models.items():
         filled = features.copy()
         X_train = filled.loc[train_ids]
         X_test = filled.loc[test_ids]
         y_train = labels.loc[train_ids]
         y_test = labels.loc[test_ids]
-        model_results[model_name] = _fit_single_model(model_name, model, X_train, y_train, X_test, y_test)
+        model_results[model_name] = _fit_single_model(
+            model_name, model, X_train, y_train, X_test, y_test
+        )
 
     return {
         "horizon_days": horizon_days,
@@ -299,7 +479,9 @@ def train_comparison_models(
     min_observations_per_variable: int,
     random_state: int = 42,
     test_size: float = 0.25,
-) -> tuple[dict[str, Any], dict[str, dict[str, int]], dict[str, int], list[dict[str, Any]]]:
+) -> tuple[
+    dict[str, Any], dict[str, dict[str, int]], dict[str, int], list[dict[str, Any]]
+]:
     """Train all comparison models across requested horizons.
 
     Builds a distinct, horizon-specific analysis frame (prediction anchor,
@@ -331,7 +513,9 @@ def train_comparison_models(
         cohort_size_by_horizon[horizon_key] = int(len(cohort))
 
         if cohort.empty:
-            results[horizon_key] = _not_evaluable_result(horizon, "No eligible patients for this horizon.")
+            results[horizon_key] = _not_evaluable_result(
+                horizon, "No eligible patients for this horizon."
+            )
             continue
 
         trajectory_bundle = build_trajectory_features(
@@ -341,9 +525,20 @@ def train_comparison_models(
             min_observations_per_variable=min_observations_per_variable,
         )
         for entry in trajectory_bundle.feature_manifest:
-            feature_manifest.append({**entry, "horizon_days": horizon})
+            feature_manifest.append(
+                {**entry, "horizon_days": horizon, "feature_set": "trajectory_only"}
+            )
 
-        static_features = _static_feature_frame(cohort, participants, encounters, observations)
+        static_features = _static_feature_frame(
+            cohort, participants, encounters, observations
+        )
+        feature_manifest.extend(
+            {
+                **entry,
+                "horizon_days": horizon,
+            }
+            for entry in _static_feature_manifest(static_features)
+        )
         labels = cohort.set_index("patient_id")["label"]
         patient_ids = cohort["patient_id"].tolist()
 

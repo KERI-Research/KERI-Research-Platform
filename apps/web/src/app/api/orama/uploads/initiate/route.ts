@@ -1,5 +1,6 @@
 import type { UploadInitiateRequest, UploadInitiateResponse } from "@/types/orama";
 import { initiateUpload } from "@/lib/orama-store";
+import { requireResearchAccess } from "@/lib/research-access";
 
 function isValidBody(body: unknown): body is UploadInitiateRequest {
   return (
@@ -14,14 +15,17 @@ function isValidBody(body: unknown): body is UploadInitiateRequest {
 }
 
 export async function POST(request: Request) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const body: unknown = await request.json().catch(() => null);
 
   if (!isValidBody(body)) {
     return Response.json({ error: "Invalid upload initiation payload." }, { status: 400 });
   }
 
-  // TODO: Replace this mock target with a presigned private object-storage URL
-  // (S3, GCS, or Azure Blob) generated server-side so file bytes never transit the client bundle.
   const response: UploadInitiateResponse = await initiateUpload(body);
   return Response.json(response, { status: 201 });
 }

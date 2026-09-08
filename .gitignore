@@ -21,3 +21,5 @@ venv/
 *.log
 coverage/
 *-failure.txt
+.vscode/
+.serena/

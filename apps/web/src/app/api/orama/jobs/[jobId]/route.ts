@@ -1,4 +1,5 @@
-import { getAndAdvanceJob } from "@/lib/orama-store";
+import { refreshJobFromWorker } from "@/lib/orama-store";
+import { requireResearchAccess } from "@/lib/research-access";
 import type { JobStatusResponse } from "@/types/orama";
 
 interface JobRouteContext {
@@ -7,14 +8,19 @@ interface JobRouteContext {
   }>;
 }
 
-export async function GET(_request: Request, context: JobRouteContext) {
+export async function GET(request: Request, context: JobRouteContext) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const { jobId } = await context.params;
 
   if (!jobId) {
     return Response.json({ error: "jobId is required." }, { status: 400 });
   }
 
-  const job = await getAndAdvanceJob(jobId);
+  const job = await refreshJobFromWorker(jobId);
 
   if (!job) {
     return Response.json({ error: "Job not found." }, { status: 404 });

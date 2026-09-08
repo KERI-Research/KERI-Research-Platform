@@ -1,6 +1,6 @@
 # ORAMA Worker
 
-This worker is a Python 3.11 FastAPI service for a **synthetic-only longitudinal research pipeline** in the ORAMA research platform scaffold. It accepts inline synthetic participant, observation, outcome, encounter, and data-dictionary payloads, runs a synchronous feasibility-oriented modelling workflow, and returns research-only metrics and report artifacts.
+This worker is a Python 3.11 FastAPI service for a **synthetic-only longitudinal research pipeline**. It accepts an inline test fixture or a private R2 ZIP/CSV/Parquet object, runs an asynchronous feasibility workflow, and writes research-only report artifacts to a job-scoped private prefix.
 
 ## Important disclaimer
 
@@ -91,5 +91,13 @@ columns in the model feature matrices.
 ## Endpoints
 
 - `GET /health` — unauthenticated health check
-- `POST /internal/jobs/run` — authenticated synchronous synthetic research pipeline execution
+- `POST /internal/storage/presign-upload` — authenticated one-object R2 PUT URL generation
+- `POST /internal/datasets/validate` — authenticated private-object contract validation
+- `POST /internal/jobs/run` — authenticated asynchronous locked research job submission
 - `GET /internal/jobs/{job_id}` — authenticated job lookup and result retrieval
+- `POST /internal/storage/presign-download` — authenticated signed result-artifact download URL generation
+- `DELETE /internal/storage/uploads/{upload_id}` — authenticated raw-upload deletion
+- `DELETE /internal/storage/jobs/{job_id}/artifacts` — authenticated job artifact deletion
+
+The worker accepts an object only under `uploads/` and writes artifacts only under `results/<job-id>/`.
+It rejects ambiguous data sources, direct identifiers, leaky variables, invalid unit mappings, and a configuration hash that does not match the immutable job configuration.

@@ -1,4 +1,5 @@
-import { getJob } from "@/lib/orama-store";
+import { getReportArtifactDownloadUrl } from "@/lib/orama-store";
+import { requireResearchAccess } from "@/lib/research-access";
 
 interface DownloadRouteContext {
   params: Promise<{
@@ -6,38 +7,22 @@ interface DownloadRouteContext {
   }>;
 }
 
-export async function GET(_request: Request, context: DownloadRouteContext) {
+export async function GET(request: Request, context: DownloadRouteContext) {
+  const accessFailure = requireResearchAccess(request);
+  if (accessFailure) {
+    return accessFailure;
+  }
+
   const { jobId } = await context.params;
 
   if (!jobId) {
     return Response.json({ error: "jobId is required." }, { status: 400 });
   }
 
-  const job = await getJob(jobId);
-
-  if (!job?.result) {
-    return Response.json({ error: "No completed mock report is available for this job." }, { status: 404 });
+  const downloadUrl = await getReportArtifactDownloadUrl(jobId);
+  if (!downloadUrl) {
+    return Response.json({ error: "No completed report artifact is available for this job." }, { status: 404 });
   }
 
-  // TODO: Stream the finalized report artifact from private object storage rather than generating inline JSON.
-  const payload = JSON.stringify(
-    {
-      jobId: job.jobId,
-      datasetId: job.datasetId,
-      status: job.status,
-      report: job.result.report,
-      cohortExclusions: job.result.cohortExclusions,
-      comparison: job.result.comparison,
-      warnings: job.result.warnings,
-    },
-    null,
-    2,
-  );
-
-  return new Response(payload, {
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Disposition": `attachment; filename="orama-report-${jobId}.json"`,
-    },
-  });
+  return Response.redirect(downloadUrl, 307);
 }
