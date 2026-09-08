@@ -6,6 +6,7 @@ import logging
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import RedirectResponse
 
 from app.pipeline.evaluate import feasibility_conclusion
 from app.pipeline.ingest import dataset_to_frames
@@ -28,10 +29,15 @@ app = FastAPI(
 job_store = InMemoryJobStore()
 
 
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """Redirect root to /health so HF Space probes and browsers get a 200."""
+    return RedirectResponse(url="/health")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Return a minimal unauthenticated health status."""
-
     return {"status": "ok"}
 
 
