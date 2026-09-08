@@ -35,7 +35,9 @@ def get_expected_shared_secret() -> str:
 
 
 async def verify_shared_secret(
-    x_orama_worker_secret: Annotated[str | None, Header(alias=SHARED_SECRET_HEADER)] = None,
+    x_orama_worker_secret: Annotated[
+        str | None, Header(alias=SHARED_SECRET_HEADER)
+    ] = None,
 ) -> None:
     """Validate the internal shared secret header.
 

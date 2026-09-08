@@ -17,6 +17,7 @@ Copy `.env.example` to `.env.local` and configure the server-side deployment var
 
 - `ORAMA_DATABASE_URL`
 - `ORAMA_WORKER_URL`
+- `ORAMA_WORKER_HF_TOKEN` when the worker is a private `hf.space` deployment
 - `ORAMA_WORKER_SHARED_SECRET`
 - `ORAMA_APP_URL`
 - `ORAMA_RESEARCH_ACCESS_TOKEN`

@@ -23,3 +23,5 @@ coverage/
 *-failure.txt
 .vscode/
 .serena/
+res/*_incidence/*
+.ruff*

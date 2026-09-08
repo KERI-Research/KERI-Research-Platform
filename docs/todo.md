@@ -393,9 +393,14 @@ Notes:
 - Governance controls and retention implementation: Complete
 - Final freeze and external validation gate: Complete
 
-## External deployment blockers
+## Production deployment status
 
-- The verified worker update is ready locally, but `ORAMA_WORKER_HF_TOKEN` lacks push/contribute permission for the private `JayNightmare/orama-worker` Space. Grant write access, then deploy the updated `apps/worker` runtime.
-- The active Cloudflare token verifies successfully but returns HTTP 403 for the R2 bucket CORS API. Grant bucket CORS administration permission and apply the production-only `https://orama.cerebrallab.org` `PUT`/`Content-Type` policy documented in `docs/questions.md`.
+- Completed: the verified worker source is published to the private `JayNightmare/orama-worker` Space using the write-enabled `ORAMA_WORKER_HF_TOKEN`. The Hugging Face bearer gate and ORAMA shared-secret gate both pass an authenticated internal request.
+- Completed: Cloudflare R2 CORS is verified for `https://orama.cerebrallab.org` direct uploads; no further CORS action is required.
+- Completed: Vercel deployment `dpl_7BkM2AbyhmJLQU6r1Cbtbzk837uW` is ready and aliased to `https://orama.cerebrallab.org`. Its production environment targets the standard private `hf.space` worker host and includes the required access, retention, worker, database, and callback configuration.
+- Completed: production access checks confirm an unauthenticated page redirect, unauthenticated API rejection, and successful authenticated jobs retrieval.
+- Completed: the Space R2 credential pair was corrected after its access-key ID was found to be malformed. The subsequent worker-issued signed R2 write and delete probe returned `200` for both operations.
+- Completed: a disposable 20-participant synthetic ZIP completed the production upload, R2 write, metadata finalization, worker validation, locked job dispatch, terminal `NOT_EVALUABLE` feasibility result, private report download, and authorized dataset/artifact cleanup flow.
+- Operational cleanup decision: one failed pre-fix signed-upload attempt left an unfinalized synthetic `uploads` metadata row with no R2 object or dataset. Its removal is documented in `docs/questions.md` for explicit confirmation because it requires a destructive Neon operation.
 
-This roadmap should be used as the next implementation sequence for ORAMA: finish the storage/job orchestration layer, lock the static-vs-trajectory modelling comparison, then complete the governance, calibration, and external-validation gate before any broader release.
+The implementation roadmap and production validation are complete. No clinical or patient-data workflow was introduced by the operational checks.

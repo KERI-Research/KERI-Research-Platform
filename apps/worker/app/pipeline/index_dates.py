@@ -66,7 +66,14 @@ def build_horizon_frame(
 
     if participants.empty:
         empty = pd.DataFrame(
-            columns=["patient_id", "label", "is_case", "prediction_anchor_date", "feature_cutoff", "history_days"]
+            columns=[
+                "patient_id",
+                "label",
+                "is_case",
+                "prediction_anchor_date",
+                "feature_cutoff",
+                "history_days",
+            ]
         )
         return empty, exclusions
 
@@ -90,7 +97,9 @@ def build_horizon_frame(
 
     all_outcomes = outcomes.copy()
     if not all_outcomes.empty:
-        all_outcomes["outcome_at"] = pd.to_datetime(all_outcomes["outcome_at"], utc=True, errors="coerce")
+        all_outcomes["outcome_at"] = pd.to_datetime(
+            all_outcomes["outcome_at"], utc=True, errors="coerce"
+        )
 
     earliest_outcome = _earliest_outcome_dates(outcomes)
     base = base.merge(earliest_outcome, on="patient_id", how="left")
@@ -100,7 +109,9 @@ def build_horizon_frame(
     gap_delta = pd.to_timedelta(prediction_gap_days, unit="D")
 
     case_mask = base["is_case"]
-    control_reference = base["reference_date"].where(base["reference_date"].notna(), base["diagnosis_date_fallback"])
+    control_reference = base["reference_date"].where(
+        base["reference_date"].notna(), base["diagnosis_date_fallback"]
+    )
     anchor = pd.Series(pd.NaT, index=base.index, dtype="datetime64[ns, UTC]")
     if case_mask.any():
         anchor.loc[case_mask] = base.loc[case_mask, "outcome_at"] - horizon_delta
@@ -112,7 +123,14 @@ def build_horizon_frame(
     exclusions["no_valid_anchor"] = int(missing_anchor.sum())
     base = base.loc[~missing_anchor].copy()
 
-    empty_result_columns = ["patient_id", "label", "is_case", "prediction_anchor_date", "feature_cutoff", "history_days"]
+    empty_result_columns = [
+        "patient_id",
+        "label",
+        "is_case",
+        "prediction_anchor_date",
+        "feature_cutoff",
+        "history_days",
+    ]
     if base.empty:
         return pd.DataFrame(columns=empty_result_columns), exclusions
 
@@ -125,7 +143,9 @@ def build_horizon_frame(
         merged = base[["patient_id", "prediction_anchor_date"]].merge(
             all_outcomes[["patient_id", "outcome_at"]], on="patient_id", how="inner"
         )
-        prior_or_at_anchor = merged.loc[merged["outcome_at"] <= merged["prediction_anchor_date"], "patient_id"]
+        prior_or_at_anchor = merged.loc[
+            merged["outcome_at"] <= merged["prediction_anchor_date"], "patient_id"
+        ]
         bad_ids = set(prior_or_at_anchor.unique())
         if bad_ids:
             exclusions["outcome_before_or_at_anchor"] = len(bad_ids)
@@ -135,17 +155,21 @@ def build_horizon_frame(
         # Defensive check: a patient without their own recorded outcome must
         # never be silently used as a negative example if some outcome
         # falls inside their horizon window. Excluded rather than relabeled.
-        control_rows = base.loc[~base["is_case"], ["patient_id", "prediction_anchor_date"]]
+        control_rows = base.loc[
+            ~base["is_case"], ["patient_id", "prediction_anchor_date"]
+        ]
         if not control_rows.empty:
             merged_controls = control_rows.merge(
                 all_outcomes[["patient_id", "outcome_at"]], on="patient_id", how="inner"
             )
             if not merged_controls.empty:
                 merged_controls["days_to_outcome"] = (
-                    merged_controls["outcome_at"] - merged_controls["prediction_anchor_date"]
+                    merged_controls["outcome_at"]
+                    - merged_controls["prediction_anchor_date"]
                 ).dt.days
                 offending = merged_controls.loc[
-                    (merged_controls["days_to_outcome"] > 0) & (merged_controls["days_to_outcome"] <= horizon_days),
+                    (merged_controls["days_to_outcome"] > 0)
+                    & (merged_controls["days_to_outcome"] <= horizon_days),
                     "patient_id",
                 ].unique()
                 if len(offending):
@@ -164,7 +188,9 @@ def build_horizon_frame(
     if base.empty:
         return pd.DataFrame(columns=empty_result_columns), exclusions
 
-    base["history_days"] = (base["prediction_anchor_date"] - base["first_history_at"]).dt.days
+    base["history_days"] = (
+        base["prediction_anchor_date"] - base["first_history_at"]
+    ).dt.days
     insufficient_mask = base["history_days"] < min_history_days
     exclusions["insufficient_history"] = int(insufficient_mask.sum())
     base = base.loc[~insufficient_mask].copy()
@@ -189,8 +215,15 @@ def build_horizon_frame(
     base["label"] = label
 
     return (
-        base[["patient_id", "label", "is_case", "prediction_anchor_date", "feature_cutoff", "history_days"]].reset_index(
-            drop=True
-        ),
+        base[
+            [
+                "patient_id",
+                "label",
+                "is_case",
+                "prediction_anchor_date",
+                "feature_cutoff",
+                "history_days",
+            ]
+        ].reset_index(drop=True),
         exclusions,
     )

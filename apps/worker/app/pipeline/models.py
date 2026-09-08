@@ -6,12 +6,12 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.base import clone
 from xgboost import XGBClassifier
 
 from app.pipeline.cohort import compute_first_history_at
@@ -21,10 +21,10 @@ from app.pipeline.evaluate import (
     subgroup_metrics,
 )
 from app.pipeline.index_dates import build_horizon_frame
+from app.pipeline.reporting import compute_shap_summary
 from app.pipeline.splits import patient_level_split
 from app.pipeline.static_features import build_static_measurement_features
 from app.pipeline.trajectories import build_trajectory_features
-from app.pipeline.reporting import compute_shap_summary
 
 MIN_SUFFICIENT_HISTORY_PATIENTS = 20
 MIN_HISTORY_MULTIPLIER = 2
@@ -275,8 +275,8 @@ def _fit_single_model(
     result = {
         "status": "evaluated",
         "metrics": compute_metrics(y_test.to_numpy(), y_prob),
-        "n_train": int(len(X_train)),
-        "n_test": int(len(X_test)),
+        "n_train": len(X_train),
+        "n_test": len(X_test),
         "model_name": model_name,
     }
     if "sex" in X_test.columns:
@@ -357,7 +357,7 @@ def fit_horizon_model_suite(
         patient_ids,
         test_size=test_size,
         random_state=random_state,
-        labels=labels.to_dict(),
+        labels={pid: labels[pid] for pid in patient_ids},
     )
     if (
         not test_ids
@@ -510,7 +510,7 @@ def train_comparison_models(
             min_history_days=min_history_days,
         )
         exclusions_by_horizon[horizon_key] = exclusions
-        cohort_size_by_horizon[horizon_key] = int(len(cohort))
+        cohort_size_by_horizon[horizon_key] = len(cohort)
 
         if cohort.empty:
             results[horizon_key] = _not_evaluable_result(
@@ -551,7 +551,7 @@ def train_comparison_models(
             random_state=random_state,
             test_size=test_size,
         )
-        result["cohort_size"] = int(len(cohort))
+        result["cohort_size"] = len(cohort)
         result["exclusions"] = exclusions
         results[horizon_key] = result
 

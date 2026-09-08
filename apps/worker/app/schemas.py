@@ -102,7 +102,7 @@ class JobRequest(StrictModel):
     analysis_config: AnalysisConfig = Field(default_factory=AnalysisConfig)
 
     @model_validator(mode="after")
-    def validate_dataset_source(self) -> "JobRequest":
+    def validate_dataset_source(self) -> JobRequest:
         has_inline_dataset = self.dataset is not None
         has_storage_dataset = bool(self.dataset_object_key or self.dataset_filename)
         if has_inline_dataset == has_storage_dataset:

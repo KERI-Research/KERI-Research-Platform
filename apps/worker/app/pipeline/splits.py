@@ -7,7 +7,9 @@ from collections.abc import Iterable, Mapping
 from sklearn.model_selection import train_test_split
 
 
-def _can_stratify(unique_ids: list[str], labels: Mapping[str, int], test_size: float) -> bool:
+def _can_stratify(
+    unique_ids: list[str], labels: Mapping[str, int], test_size: float
+) -> bool:
     """Return whether a stratified split is feasible for these labels.
 
     Stratification requires at least two classes, each with enough members

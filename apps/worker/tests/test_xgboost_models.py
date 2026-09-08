@@ -17,7 +17,9 @@ def test_m3_and_m4_use_class_weighted_xgboost(monkeypatch) -> None:
         },
         index=patient_ids,
     )
-    trajectory_features = pd.DataFrame({"patient_id": patient_ids, "traj__lab__slope": [0.1] * 40})
+    trajectory_features = pd.DataFrame(
+        {"patient_id": patient_ids, "traj__lab__slope": [0.1] * 40}
+    )
     captured_models = {}
 
     def capture_model(model_name, model, *_):
@@ -28,9 +30,14 @@ def test_m3_and_m4_use_class_weighted_xgboost(monkeypatch) -> None:
     monkeypatch.setattr(
         models,
         "patient_level_split",
-        lambda *_args, **_kwargs: (patient_ids[:5] + patient_ids[10:30], patient_ids[5:10] + patient_ids[30:]),
+        lambda *_args, **_kwargs: (
+            patient_ids[:5] + patient_ids[10:30],
+            patient_ids[5:10] + patient_ids[30:],
+        ),
     )
-    models.fit_horizon_model_suite(static_features, trajectory_features, labels, patient_ids, horizon_days=365)
+    models.fit_horizon_model_suite(
+        static_features, trajectory_features, labels, patient_ids, horizon_days=365
+    )
 
     for model_name in ("M3", "M4"):
         assert isinstance(captured_models[model_name], XGBClassifier)

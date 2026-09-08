@@ -9,7 +9,9 @@ def test_bootstrap_ci_is_repeatable_for_patient_level_predictions() -> None:
     y_prob = np.array([0.1, 0.2, 0.4, 0.6, 0.8, 0.9])
 
     first = bootstrap_ci(y_true, y_prob, roc_auc_score, n_bootstrap=100, random_state=7)
-    second = bootstrap_ci(y_true, y_prob, roc_auc_score, n_bootstrap=100, random_state=7)
+    second = bootstrap_ci(
+        y_true, y_prob, roc_auc_score, n_bootstrap=100, random_state=7
+    )
 
     assert first == second
     assert first[0] <= first[1]

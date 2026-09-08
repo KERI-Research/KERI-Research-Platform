@@ -28,4 +28,6 @@ def test_insufficient_outcomes_or_history_returns_not_evaluable() -> None:
     )
 
     assert result["viability"]["is_viable"] is False
-    assert {item["status"] for item in result["model_results"].values()} == {"not_evaluable"}
+    assert {item["status"] for item in result["model_results"].values()} == {
+        "not_evaluable"
+    }

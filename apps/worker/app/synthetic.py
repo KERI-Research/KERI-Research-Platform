@@ -27,9 +27,17 @@ def generate_synthetic_dataset(n_patients: int = 200, seed: int = 42) -> Dataset
     outcomes: list[Outcome] = []
     encounters: list[Encounter] = []
     data_dictionary = [
-        DataDictionaryEntry(variable_code="lab_a", display_name="Synthetic Lab A", unit="u/L"),
-        DataDictionaryEntry(variable_code="lab_b", display_name="Synthetic Lab B", unit="mg/dL"),
-        DataDictionaryEntry(variable_code="symptom_score", display_name="Synthetic Symptom Score", unit="points"),
+        DataDictionaryEntry(
+            variable_code="lab_a", display_name="Synthetic Lab A", unit="u/L"
+        ),
+        DataDictionaryEntry(
+            variable_code="lab_b", display_name="Synthetic Lab B", unit="mg/dL"
+        ),
+        DataDictionaryEntry(
+            variable_code="symptom_score",
+            display_name="Synthetic Symptom Score",
+            unit="points",
+        ),
     ]
 
     for idx in range(1, n_patients + 1):
@@ -51,7 +59,9 @@ def generate_synthetic_dataset(n_patients: int = 200, seed: int = 42) -> Dataset
         first_history = reference_date - timedelta(days=730)
         encounter_count = int(rng.integers(3, 8))
         for enc_idx in range(encounter_count):
-            encounter_time = first_history + timedelta(days=enc_idx * 90 + int(rng.integers(0, 10)))
+            encounter_time = first_history + timedelta(
+                days=enc_idx * 90 + int(rng.integers(0, 10))
+            )
             encounters.append(
                 Encounter(
                     patient_id=patient_id,
@@ -64,7 +74,9 @@ def generate_synthetic_dataset(n_patients: int = 200, seed: int = 42) -> Dataset
         baseline_b = rng.normal(50, 8)
         symptom = rng.normal(2, 1)
         for step in range(6):
-            observed_at = first_history + timedelta(days=step * 110 + int(rng.integers(0, 20)))
+            observed_at = first_history + timedelta(
+                days=step * 110 + int(rng.integers(0, 20))
+            )
             drift = 0.25 * step if cohort_label == "case" else 0.05 * step
             observations.extend(
                 [
@@ -97,7 +109,8 @@ def generate_synthetic_dataset(n_patients: int = 200, seed: int = 42) -> Dataset
                 Outcome(
                     patient_id=patient_id,
                     outcome_code="synthetic_cancer_risk_signal",
-                    outcome_at=reference_date + timedelta(days=int(rng.integers(30, 365))),
+                    outcome_at=reference_date
+                    + timedelta(days=int(rng.integers(30, 365))),
                     label=1,
                 )
             )

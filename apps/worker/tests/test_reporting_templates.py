@@ -8,14 +8,20 @@ def test_report_templates_render_required_research_content() -> None:
         "schema_version": "1",
         "run_date": "2026-09-07T00:00:00+00:00",
         "configuration_hash": "abc123",
-        "analysis_decisions": {"requested_horizons": [365], "feasibility_conclusion": "NO_GO"},
+        "analysis_decisions": {
+            "requested_horizons": [365],
+            "feasibility_conclusion": "NO_GO",
+        },
         "cohort_flow": {
             "eligible_cohort_size_by_horizon": {"365": 20},
             "exclusions_by_horizon": {"365": {"insufficient_history": 2}},
         },
         "metrics_per_model_horizon": {
             "365": {
-                "comparison_deltas": {"M2_minus_M1_auroc": 0.01, "M4_minus_M3_auroc": 0.02},
+                "comparison_deltas": {
+                    "M2_minus_M1_auroc": 0.01,
+                    "M4_minus_M3_auroc": 0.02,
+                },
                 "model_results": {
                     "M0": {"status": "evaluated", "metrics": {}},
                     "M1": {"status": "evaluated", "metrics": {}},

@@ -101,3 +101,25 @@ columns in the model feature matrices.
 
 The worker accepts an object only under `uploads/` and writes artifacts only under `results/<job-id>/`.
 It rejects ambiguous data sources, direct identifiers, leaky variables, invalid unit mappings, and a configuration hash that does not match the immutable job configuration.
+
+## Packaging ordinary-incidence source data
+
+Use the packer to convert a completed, explicitly synthetic canonical
+ordinary-incidence bundle into one endpoint-specific ORAMA ZIP. It accepts only
+`simulation_only: true` source manifests, excludes augmented source events,
+derives each control's reference date from its latest safe native event, and
+checks the generated archive through the worker ingestion validator before it
+is written.
+
+From `apps/worker`:
+
+```bash
+python -m app.importers.ordinary_incidence \
+  ../../res/ordinary_incidence/ordinary_incidence-5000-20260831-e834cfb774c5 \
+  --endpoint cancer \
+  --output ../../res/ordinary_incidence/ordinary-incidence-5000-cancer-orama.zip
+```
+
+Use `--endpoint diabetes` to package that endpoint instead. The source
+`conditions.parquet` table is intentionally not mapped until a numeric,
+pre-index condition-feature policy is defined.

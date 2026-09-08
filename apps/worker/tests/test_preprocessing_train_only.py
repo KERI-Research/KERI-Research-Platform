@@ -20,7 +20,9 @@ def test_preprocessing_statistics_come_from_training_only() -> None:
     pipeline.fit(X_train, y_train)
     _ = pipeline.predict_proba(X_test)
 
-    numeric_transformer = pipeline.named_steps["preprocessor"].named_transformers_["numeric"]
+    numeric_transformer = pipeline.named_steps["preprocessor"].named_transformers_[
+        "numeric"
+    ]
     imputer = numeric_transformer.named_steps["imputer"]
     scaler = numeric_transformer.named_steps["scaler"]
 

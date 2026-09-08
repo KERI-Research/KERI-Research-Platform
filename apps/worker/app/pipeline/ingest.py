@@ -8,8 +8,7 @@ from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
-from pydantic import BaseModel
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.schemas import DatasetPayload
 

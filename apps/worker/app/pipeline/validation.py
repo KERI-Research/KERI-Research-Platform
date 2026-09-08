@@ -83,8 +83,9 @@ def validate_frames(frames: dict[str, pd.DataFrame]) -> None:
         if participant_ids.duplicated().any():
             problems.append("participants contains duplicate patient_id values")
         if participant_ids.map(
-            lambda value: bool(EMAIL_PATTERN.fullmatch(value))
-            or _looks_like_nhs_number(value)
+            lambda value: (
+                bool(EMAIL_PATTERN.fullmatch(value)) or _looks_like_nhs_number(value)
+            )
         ).any():
             problems.append(
                 "participants.patient_id appears to contain a direct identifier rather than a pseudonym"
@@ -126,10 +127,9 @@ def validate_frames(frames: dict[str, pd.DataFrame]) -> None:
                 data_dictionary.dropna(subset=["variable_code", "unit"])
                 .assign(
                     variable_code=lambda frame: frame["variable_code"].astype(str),
-                    unit=lambda frame: frame["unit"]
-                    .astype(str)
-                    .str.strip()
-                    .str.lower(),
+                    unit=lambda frame: (
+                        frame["unit"].astype(str).str.strip().str.lower()
+                    ),
                 )
                 .drop_duplicates("variable_code")
                 .set_index("variable_code")["unit"]

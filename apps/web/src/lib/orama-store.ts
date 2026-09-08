@@ -223,26 +223,42 @@ async function recordAuditEvent(eventType: string, entityId: string, payload: Re
 function workerConfiguration() {
   const workerUrl = process.env.ORAMA_WORKER_URL;
   const workerSecret = process.env.ORAMA_WORKER_SHARED_SECRET;
+  const workerHfToken = process.env.ORAMA_WORKER_HF_TOKEN;
   const appUrl = process.env.ORAMA_APP_URL ?? process.env.NEXT_PUBLIC_APP_URL;
 
   if (!workerUrl || !workerSecret || !appUrl) {
     throw new Error("ORAMA_WORKER_URL, ORAMA_WORKER_SHARED_SECRET, and ORAMA_APP_URL must be configured.");
   }
 
+  const normalizedWorkerUrl = workerUrl.replace(/\/$/, "");
+  const workerHostname = new URL(normalizedWorkerUrl).hostname;
+  const requiresHfAuthorization = workerHostname.endsWith(".hf.space");
+  if (requiresHfAuthorization && !workerHfToken) {
+    throw new Error("ORAMA_WORKER_HF_TOKEN must be configured for a private Hugging Face Space worker.");
+  }
+
   return {
-    workerUrl: workerUrl.replace(/\/$/, ""),
+    workerUrl: normalizedWorkerUrl,
     workerSecret,
+    workerAuthorization: requiresHfAuthorization ? `Bearer ${workerHfToken}` : undefined,
     appUrl: appUrl.replace(/\/$/, ""),
   };
 }
 
+function workerHeaders(configuration: ReturnType<typeof workerConfiguration>) {
+  return {
+    "X-Orama-Worker-Secret": configuration.workerSecret,
+    ...(configuration.workerAuthorization ? { Authorization: configuration.workerAuthorization } : {}),
+  };
+}
+
 async function requestUploadUrl(uploadId: string, filename: string, contentType: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const response = await fetch(`${workerUrl}/internal/storage/presign-upload`, {
+  const worker = workerConfiguration();
+  const response = await fetch(`${worker.workerUrl}/internal/storage/presign-upload`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Orama-Worker-Secret": workerSecret,
+      ...workerHeaders(worker),
     },
     body: JSON.stringify({ upload_id: uploadId, filename, content_type: contentType }),
     signal: AbortSignal.timeout(10000),
@@ -255,11 +271,11 @@ async function requestUploadUrl(uploadId: string, filename: string, contentType:
 }
 
 async function verifyUploadedObject(uploadId: string, filename: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const url = new URL(`${workerUrl}/internal/storage/uploads/${encodeURIComponent(uploadId)}/exists`);
+  const worker = workerConfiguration();
+  const url = new URL(`${worker.workerUrl}/internal/storage/uploads/${encodeURIComponent(uploadId)}/exists`);
   url.searchParams.set("filename", filename);
   const response = await fetch(url, {
-    headers: { "X-Orama-Worker-Secret": workerSecret },
+    headers: workerHeaders(worker),
     signal: AbortSignal.timeout(10000),
   });
   const payload = (await response.json().catch(() => null)) as { exists?: unknown } | null;
@@ -273,12 +289,12 @@ async function verifyUploadedObject(uploadId: string, filename: string) {
 }
 
 async function requestArtifactDownloadUrl(objectKey: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const response = await fetch(`${workerUrl}/internal/storage/presign-download`, {
+  const worker = workerConfiguration();
+  const response = await fetch(`${worker.workerUrl}/internal/storage/presign-download`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Orama-Worker-Secret": workerSecret,
+      ...workerHeaders(worker),
     },
     body: JSON.stringify({ object_key: objectKey }),
     signal: AbortSignal.timeout(10000),
@@ -291,12 +307,12 @@ async function requestArtifactDownloadUrl(objectKey: string) {
 }
 
 async function deleteWorkerUpload(uploadId: string, filename: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const url = new URL(`${workerUrl}/internal/storage/uploads/${encodeURIComponent(uploadId)}`);
+  const worker = workerConfiguration();
+  const url = new URL(`${worker.workerUrl}/internal/storage/uploads/${encodeURIComponent(uploadId)}`);
   url.searchParams.set("filename", filename);
   const response = await fetch(url, {
     method: "DELETE",
-    headers: { "X-Orama-Worker-Secret": workerSecret },
+    headers: workerHeaders(worker),
     signal: AbortSignal.timeout(20000),
   });
   if (!response.ok) {
@@ -305,10 +321,10 @@ async function deleteWorkerUpload(uploadId: string, filename: string) {
 }
 
 async function deleteWorkerArtifacts(jobId: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const response = await fetch(`${workerUrl}/internal/storage/jobs/${encodeURIComponent(jobId)}/artifacts`, {
+  const worker = workerConfiguration();
+  const response = await fetch(`${worker.workerUrl}/internal/storage/jobs/${encodeURIComponent(jobId)}/artifacts`, {
     method: "DELETE",
-    headers: { "X-Orama-Worker-Secret": workerSecret },
+    headers: workerHeaders(worker),
     signal: AbortSignal.timeout(20000),
   });
   if (!response.ok) {
@@ -317,12 +333,12 @@ async function deleteWorkerArtifacts(jobId: string) {
 }
 
 async function validateStoredDataset(objectKey: string, filename: string) {
-  const { workerUrl, workerSecret } = workerConfiguration();
-  const response = await fetch(`${workerUrl}/internal/datasets/validate`, {
+  const worker = workerConfiguration();
+  const response = await fetch(`${worker.workerUrl}/internal/datasets/validate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Orama-Worker-Secret": workerSecret,
+      ...workerHeaders(worker),
     },
     body: JSON.stringify({ dataset_object_key: objectKey, dataset_filename: filename }),
     signal: AbortSignal.timeout(20000),
@@ -349,12 +365,12 @@ async function dispatchToWorker(job: JobRecord) {
       throw new Error("The dataset has no finalized private storage object.");
     }
 
-    const { workerUrl, workerSecret, appUrl } = workerConfiguration();
-    const response = await fetch(`${workerUrl}/internal/jobs/run`, {
+    const worker = workerConfiguration();
+    const response = await fetch(`${worker.workerUrl}/internal/jobs/run`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Orama-Worker-Secret": workerSecret,
+        ...workerHeaders(worker),
       },
       body: JSON.stringify({
         job_id: job.jobId,
@@ -363,7 +379,7 @@ async function dispatchToWorker(job: JobRecord) {
         dataset_filename: filename,
         result_write_prefix: resultWritePrefix,
         config_hash: job.configHash,
-        callback_url: `${appUrl}/api/orama/jobs/${encodeURIComponent(job.jobId)}/callback`,
+        callback_url: `${worker.appUrl}/api/orama/jobs/${encodeURIComponent(job.jobId)}/callback`,
         analysis_config: {
           horizons: job.config.horizons,
           min_history_days: job.config.min_history_days,
@@ -763,9 +779,9 @@ export async function refreshJobFromWorker(jobId: string): Promise<JobRecord | n
 
   const pollCount = row.pollCount + 1;
   try {
-    const { workerUrl, workerSecret } = workerConfiguration();
-    const response = await fetch(`${workerUrl}/internal/jobs/${encodeURIComponent(jobId)}`, {
-      headers: { "X-Orama-Worker-Secret": workerSecret },
+    const worker = workerConfiguration();
+    const response = await fetch(`${worker.workerUrl}/internal/jobs/${encodeURIComponent(jobId)}`, {
+      headers: workerHeaders(worker),
       signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) {

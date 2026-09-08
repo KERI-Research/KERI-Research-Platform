@@ -16,14 +16,18 @@ class InMemoryJobStore:
         self._lock = Lock()
         self._jobs: dict[str, JobStatusResponse] = {}
 
-    def create_or_reset(self, job_id: str, message: str | None = None) -> JobStatusResponse:
+    def create_or_reset(
+        self, job_id: str, message: str | None = None
+    ) -> JobStatusResponse:
         now = datetime.now(timezone.utc)
         record = JobStatusResponse(
             job_id=job_id,
             status=JobStatus.QUEUED,
             created_at=now,
             updated_at=now,
-            status_history=[JobStateTransition(status=JobStatus.QUEUED, at=now, message=message)],
+            status_history=[
+                JobStateTransition(status=JobStatus.QUEUED, at=now, message=message)
+            ],
         )
         with self._lock:
             self._jobs[job_id] = record
@@ -43,7 +47,9 @@ class InMemoryJobStore:
             record = self._jobs[job_id]
             record.status = status
             record.updated_at = now
-            record.status_history.append(JobStateTransition(status=status, at=now, message=message))
+            record.status_history.append(
+                JobStateTransition(status=status, at=now, message=message)
+            )
             if result is not None:
                 record.result = result
             record.error = error

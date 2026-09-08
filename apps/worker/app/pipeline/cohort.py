@@ -5,7 +5,9 @@ from __future__ import annotations
 import pandas as pd
 
 
-def compute_first_history_at(observations: pd.DataFrame, encounters: pd.DataFrame) -> pd.DataFrame:
+def compute_first_history_at(
+    observations: pd.DataFrame, encounters: pd.DataFrame
+) -> pd.DataFrame:
     """Return each patient's earliest recorded observation/encounter timestamp.
 
     This marks the start of a patient's available history and is used to check
@@ -20,7 +22,9 @@ def compute_first_history_at(observations: pd.DataFrame, encounters: pd.DataFram
         event_frames.append(obs[["patient_id", "event_at"]])
     if not encounters.empty:
         enc = encounters[["patient_id", "encountered_at"]].copy()
-        enc["event_at"] = pd.to_datetime(enc["encountered_at"], utc=True, errors="coerce")
+        enc["event_at"] = pd.to_datetime(
+            enc["encountered_at"], utc=True, errors="coerce"
+        )
         event_frames.append(enc[["patient_id", "event_at"]])
 
     if not event_frames:
