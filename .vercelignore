@@ -1,7 +1,15 @@
-# Vercel should only build apps/web (Next.js).
-# The Python worker runs on Hugging Face Spaces, not Vercel.
+# Vercel should only build apps/web (Next.js)
+
+# The Python worker runs on Hugging Face Spaces, not Vercel
+
 apps/worker
+
 # Also ignore test artefacts
+
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
+
+# Local synthetic research data is uploaded only through the private R2 workflow
+
+res/

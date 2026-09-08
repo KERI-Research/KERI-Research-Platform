@@ -40,6 +40,15 @@ docker run --rm -p 7860:7860 \
 
 The container listens on port `7860`, matching the default port for Hugging Face Docker Spaces.
 
+## Concurrent job capacity
+
+The worker runs at most two jobs at once (`ORAMA_MAX_CONCURRENT_JOBS=2`). Extra
+jobs remain `QUEUED` until a processing slot is available. The Docker runtime
+limits OpenMP, OpenBLAS, MKL, NumExpr, and XGBoost to one native compute thread
+per job, which keeps two active jobs within the Space's two vCPU allocation.
+CPU affinity is not used because container CPU numbering is not a stable worker
+contract.
+
 ## Private Hugging Face Docker Space deployment
 
 This directory is structured for deployment as a **private Hugging Face Docker Space**:

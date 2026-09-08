@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { ComparisonBars } from "@/components/ComparisonBars";
@@ -19,10 +19,80 @@ function isTerminal(status: JobStatus) {
 
 export default function JobDetailPage() {
 	const params = useParams();
+	const router = useRouter();
 	const rawJobId = params?.jobId;
 	const jobId = Array.isArray(rawJobId) ? rawJobId[0] : (rawJobId ?? "");
 	const [job, setJob] = useState<JobRecord | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [isSubmittingAction, setIsSubmittingAction] = useState(false);
+
+	async function retryFailedJob() {
+		if (!jobId) {
+			return;
+		}
+
+		setIsSubmittingAction(true);
+		setError(null);
+		try {
+			const response = await fetch(
+				`/api/orama/jobs/${jobId}`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type":
+							"application/json",
+					},
+					body: JSON.stringify({
+						action: "retry",
+					}),
+				},
+			);
+			if (!response.ok) {
+				throw new Error("Retry request failed.");
+			}
+			const data =
+				(await response.json()) as JobStatusResponse;
+			router.replace(`/jobs/${data.job.jobId}`);
+		} catch {
+			setError(
+				"The failed job could not be retried. Confirm the worker is available and try again.",
+			);
+		} finally {
+			setIsSubmittingAction(false);
+		}
+	}
+
+	async function deleteTerminalJob() {
+		if (
+			!jobId ||
+			!window.confirm(
+				"Delete this terminal job and its private report artifacts? The dataset will be retained.",
+			)
+		) {
+			return;
+		}
+
+		setIsSubmittingAction(true);
+		setError(null);
+		try {
+			const response = await fetch(
+				`/api/orama/jobs/${jobId}`,
+				{
+					method: "DELETE",
+				},
+			);
+			if (!response.ok) {
+				throw new Error("Job deletion failed.");
+			}
+			router.push("/jobs");
+		} catch {
+			setError(
+				"The terminal job could not be deleted. Its private artifacts may be temporarily unavailable.",
+			);
+		} finally {
+			setIsSubmittingAction(false);
+		}
+	}
 
 	useEffect(() => {
 		if (!jobId) {
@@ -125,6 +195,41 @@ export default function JobDetailPage() {
 								}
 							/>
 						</div>
+						{isTerminal(job.status) ? (
+							<div className="flex flex-wrap gap-2 lg:col-span-3">
+								{job.status ===
+								"FAILED" ? (
+									<button
+										type="button"
+										onClick={() => {
+											void retryFailedJob();
+										}}
+										disabled={
+											isSubmittingAction
+										}
+										className="rounded-full bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+									>
+										{isSubmittingAction
+											? "Starting retry..."
+											: "Retry job"}
+									</button>
+								) : null}
+								<button
+									type="button"
+									onClick={() => {
+										void deleteTerminalJob();
+									}}
+									disabled={
+										isSubmittingAction
+									}
+									className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-400 hover:text-rose-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+								>
+									{isSubmittingAction
+										? "Working..."
+										: "Delete job"}
+								</button>
+							</div>
+						) : null}
 					</div>
 				) : (
 					<p className="text-sm text-slate-600">
@@ -319,6 +424,7 @@ export default function JobDetailPage() {
 															{row.percent.toFixed(
 																1,
 															)}
+
 															%
 														</td>
 													</tr>

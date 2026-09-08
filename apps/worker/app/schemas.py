@@ -139,6 +139,14 @@ class JobStateTransition(StrictModel):
     message: str | None = None
 
 
+class JobProgress(StrictModel):
+    """Coarse worker progress that never includes source data or model output."""
+
+    percent: int = Field(ge=0, le=100)
+    phase: str
+    detail: str | None = None
+
+
 class JobResult(StrictModel):
     feasibility_conclusion: FeasibilityConclusion
     decision_reasons: list[str] = Field(default_factory=list)
@@ -154,5 +162,6 @@ class JobStatusResponse(StrictModel):
     created_at: datetime
     updated_at: datetime
     status_history: list[JobStateTransition] = Field(default_factory=list)
+    progress: JobProgress | None = None
     result: JobResult | None = None
     error: str | None = None

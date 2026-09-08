@@ -6,7 +6,13 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from threading import Lock
 
-from app.schemas import JobResult, JobStateTransition, JobStatus, JobStatusResponse
+from app.schemas import (
+    JobProgress,
+    JobResult,
+    JobStateTransition,
+    JobStatus,
+    JobStatusResponse,
+)
 
 
 class InMemoryJobStore:
@@ -25,6 +31,7 @@ class InMemoryJobStore:
             status=JobStatus.QUEUED,
             created_at=now,
             updated_at=now,
+            progress=JobProgress(percent=0, phase="queued", detail=message),
             status_history=[
                 JobStateTransition(status=JobStatus.QUEUED, at=now, message=message)
             ],
@@ -56,7 +63,27 @@ class InMemoryJobStore:
             updated = deepcopy(record)
         return updated
 
+    def update_progress(
+        self, job_id: str, percent: int, phase: str, detail: str | None = None
+    ) -> JobStatusResponse | None:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return None
+            record.progress = JobProgress(
+                percent=percent,
+                phase=phase,
+                detail=detail,
+            )
+            record.updated_at = now
+            return deepcopy(record)
+
     def get(self, job_id: str) -> JobStatusResponse | None:
         with self._lock:
             record = self._jobs.get(job_id)
             return deepcopy(record) if record is not None else None
+
+    def list(self) -> list[JobStatusResponse]:
+        with self._lock:
+            return [deepcopy(record) for record in self._jobs.values()]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -318,6 +319,7 @@ def fit_horizon_model_suite(
     horizon_days: int,
     random_state: int = 42,
     test_size: float = 0.25,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Fit the five comparison models for one horizon, or return NOT_EVALUABLE results."""
 
@@ -415,6 +417,7 @@ def fit_horizon_model_suite(
                 eval_metric="logloss",
                 random_state=random_state,
                 scale_pos_weight=scale_pos_weight,
+                n_jobs=1,
             ),
             static_features,
         ),
@@ -424,6 +427,7 @@ def fit_horizon_model_suite(
                 eval_metric="logloss",
                 random_state=random_state,
                 scale_pos_weight=scale_pos_weight,
+                n_jobs=1,
             ),
             combined_features,
         ),
@@ -450,6 +454,8 @@ def fit_horizon_model_suite(
         }
 
     for model_name, (model, features) in models.items():
+        if progress_callback:
+            progress_callback(f"fitting {model_name}")
         filled = features.copy()
         X_train = filled.loc[train_ids]
         X_test = filled.loc[test_ids]
@@ -479,6 +485,7 @@ def train_comparison_models(
     min_observations_per_variable: int,
     random_state: int = 42,
     test_size: float = 0.25,
+    progress_callback: Callable[[int, str, str | None], None] | None = None,
 ) -> tuple[
     dict[str, Any], dict[str, dict[str, int]], dict[str, int], list[dict[str, Any]]
 ]:
@@ -492,6 +499,8 @@ def train_comparison_models(
     feature_manifest)``.
     """
 
+    if progress_callback:
+        progress_callback(20, "cohort", "Building longitudinal history index.")
     first_history = compute_first_history_at(observations, encounters)
 
     results: dict[str, Any] = {}
@@ -499,8 +508,17 @@ def train_comparison_models(
     cohort_size_by_horizon: dict[str, int] = {}
     feature_manifest: list[dict[str, Any]] = []
 
-    for horizon in horizons:
+    total_horizons = max(len(horizons), 1)
+    for horizon_index, horizon in enumerate(horizons):
         horizon_key = str(horizon)
+        horizon_start = 20 + int((horizon_index / total_horizons) * 65)
+        horizon_end = 20 + int(((horizon_index + 1) / total_horizons) * 65)
+        if progress_callback:
+            progress_callback(
+                horizon_start,
+                "horizon",
+                f"Preparing {horizon}-day cohort and trajectory features.",
+            )
         cohort, exclusions = build_horizon_frame(
             participants=participants,
             outcomes=outcomes,
@@ -542,6 +560,27 @@ def train_comparison_models(
         labels = cohort.set_index("patient_id")["label"]
         patient_ids = cohort["patient_id"].tolist()
 
+        model_steps = len(MODEL_NAMES)
+        model_step = max((horizon_end - horizon_start) // model_steps, 1)
+        model_index = 0
+
+        def report_model_progress(
+            detail: str,
+            *,
+            current_horizon: int = horizon,
+            current_start: int = horizon_start,
+            current_end: int = horizon_end,
+            current_step: int = model_step,
+        ) -> None:
+            nonlocal model_index
+            model_index += 1
+            if progress_callback:
+                progress_callback(
+                    min(current_start + model_index * current_step, current_end - 1),
+                    "model",
+                    f"{current_horizon}-day horizon: {detail}.",
+                )
+
         result = fit_horizon_model_suite(
             static_features=static_features,
             trajectory_features=trajectory_bundle.features,
@@ -550,9 +589,16 @@ def train_comparison_models(
             horizon_days=horizon,
             random_state=random_state,
             test_size=test_size,
+            progress_callback=report_model_progress,
         )
         result["cohort_size"] = len(cohort)
         result["exclusions"] = exclusions
         results[horizon_key] = result
+        if progress_callback:
+            progress_callback(
+                horizon_end,
+                "horizon",
+                f"Completed {horizon}-day horizon.",
+            )
 
     return results, exclusions_by_horizon, cohort_size_by_horizon, feature_manifest

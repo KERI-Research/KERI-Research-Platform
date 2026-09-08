@@ -683,6 +683,58 @@ export async function queueJobForWorker(job: JobRecord): Promise<JobRecord> {
   return scheduled ?? job;
 }
 
+export async function retryJob(jobId: string): Promise<JobRecord | null> {
+  const db = getDb();
+  const existing = await getJob(jobId);
+  if (!existing || existing.status !== "FAILED") {
+    return null;
+  }
+
+  const retryJobId = createId("job");
+  const lockedConfig = freezeAnalysisConfig(existing.config);
+  const [row] = await db
+    .insert(jobs)
+    .values({
+      jobId: retryJobId,
+      datasetId: existing.datasetId,
+      status: "QUEUED",
+      config: lockedConfig,
+      configHash: existing.configHash ?? configurationHash(lockedConfig),
+      analysisLockedAt: new Date(),
+      resultWritePrefix: `results/${retryJobId}`,
+      pollCount: 0,
+      retentionUntil: existing.retentionUntil ? new Date(existing.retentionUntil) : retentionDeadline(),
+    })
+    .returning();
+
+  const replacement = toJobRecord(row);
+  await recordAuditEvent("job.retried", retryJobId, {
+    previousJobId: jobId,
+    datasetId: replacement.datasetId,
+    configHash: replacement.configHash ?? null,
+  });
+  return queueJobForWorker(replacement);
+}
+
+export async function deleteJob(jobId: string): Promise<{ jobId: string } | null> {
+  const db = getDb();
+  const existing = await getJob(jobId);
+  if (!existing) {
+    return null;
+  }
+  if (!isTerminalStatus(existing.status)) {
+    throw new Error("Only terminal jobs can be deleted.");
+  }
+
+  await deleteWorkerArtifacts(jobId);
+  await db.delete(jobs).where(eq(jobs.jobId, jobId));
+  await recordAuditEvent("job.deleted", jobId, {
+    datasetId: existing.datasetId,
+    status: existing.status,
+  });
+  return { jobId };
+}
+
 export async function listJobs(): Promise<JobRecord[]> {
   const db = getDb();
   const rows = await db.select().from(jobs).orderBy(desc(jobs.createdAt));
@@ -784,6 +836,16 @@ export async function refreshJobFromWorker(jobId: string): Promise<JobRecord | n
       headers: workerHeaders(worker),
       signal: AbortSignal.timeout(10000),
     });
+    if (response.status === 404) {
+      const missingWorkerJob = await updateJobStatus(jobId, "FAILED", {
+        errorMessage: "The worker no longer has this job, likely because its runtime restarted. This run has stopped. Retry creates a new run with the same locked configuration, or delete this failed run.",
+      });
+      await recordAuditEvent("job.worker_missing", jobId, {
+        workerStatus: 404,
+        pollCount,
+      });
+      return missingWorkerJob ?? toJobRecord(row);
+    }
     if (!response.ok) {
       throw new Error("Worker status is unavailable.");
     }

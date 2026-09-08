@@ -6,13 +6,23 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from html import escape
 from typing import Annotated
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
-from fastapi.responses import RedirectResponse
+for _thread_limit_name in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(_thread_limit_name, "1")
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
 
 from app.pipeline.evaluate import feasibility_decision
 from app.pipeline.ingest import (
@@ -60,12 +70,51 @@ app = FastAPI(
     ),
 )
 job_store = InMemoryJobStore()
+MAX_CONCURRENT_JOBS = max(1, min(int(os.getenv("ORAMA_MAX_CONCURRENT_JOBS", "2")), 2))
+job_executor = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_JOBS,
+    thread_name_prefix="orama-job",
+)
 
 
-@app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    """Redirect root to /health so HF Space probes and browsers get a 200."""
-    return RedirectResponse(url="/health")
+def _dashboard_html() -> str:
+    rows = sorted(job_store.list(), key=lambda job: job.updated_at, reverse=True)
+    job_rows = (
+        "".join(
+            "<article class='job'>"
+            f"<div class='job-head'><code>{escape(job.job_id)}</code><strong>{escape(job.status.value)}</strong></div>"
+            f"<p>{escape(job.progress.phase.replace('_', ' ').title()) if job.progress else 'Waiting'}</p>"
+            f"<p class='detail'>{escape(job.progress.detail) if job.progress and job.progress.detail else 'No active phase reported.'}</p>"
+            "<div class='track'><div class='fill' style='width:"
+            f"{job.progress.percent if job.progress else 0}%'></div></div>"
+            f"<div class='meta'>{job.progress.percent if job.progress else 0}% &middot; updated {escape(job.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC'))}</div>"
+            "</article>"
+            for job in rows
+        )
+        or "<p class='empty'>No jobs are currently stored in this worker process.</p>"
+    )
+    return f"""<!doctype html>
+<html lang='en'><head><meta charset='utf-8'><meta http-equiv='refresh' content='5'>
+<meta name='viewport' content='width=device-width, initial-scale=1'><title>ORAMA Worker</title>
+<style>
+:root {{ color-scheme: light; font-family: Georgia, serif; background: #edf3ee; color: #14251d; }}
+body {{ margin: 0; }} main {{ max-width: 900px; margin: 0 auto; padding: 40px 20px 64px; }}
+h1 {{ margin: 0; font-size: 2rem; }} .intro {{ color: #466052; }} .grid {{ display: grid; gap: 14px; }}
+.job {{ border: 1px solid #c7d7ca; background: #fffdf8; padding: 18px; border-radius: 6px; }}
+.job-head {{ display: flex; gap: 16px; justify-content: space-between; align-items: center; }}
+code {{ color: #254b8b; overflow-wrap: anywhere; }} strong {{ color: #0d5d3c; font: 700 .78rem ui-monospace, monospace; }}
+p {{ margin: 10px 0 0; }} .detail, .meta, .empty {{ color: #52685a; font-size: .9rem; }}
+.track {{ margin-top: 14px; height: 9px; background: #dde8de; overflow: hidden; border-radius: 2px; }}
+.fill {{ height: 100%; background: #198754; transition: width .3s ease; }}
+footer {{ margin-top: 24px; color: #52685a; font-size: .82rem; }}
+</style></head><body><main><h1>ORAMA Worker</h1><p class='intro'>Private synthetic research job progress. This view refreshes every five seconds.</p><section class='grid'>{job_rows}</section><footer>Research use only. Synthetic data only. Non-diagnostic.</footer></main></body></html>"""
+
+
+@app.get("/", include_in_schema=False, response_class=HTMLResponse)
+def root() -> HTMLResponse:
+    """Render the private Hugging Face Space progress dashboard."""
+
+    return HTMLResponse(_dashboard_html())
 
 
 @app.get("/health")
@@ -225,8 +274,14 @@ def validate_stored_dataset(
 
 
 def _run_pipeline(request: JobRequest) -> JobResult:
+    def report_progress(percent: int, phase: str, detail: str | None = None) -> None:
+        job_store.update_progress(request.job_id, percent, phase, detail)
+
+    report_progress(5, "intake", "Loading the private synthetic dataset.")
     frames = dataset_to_frames(_dataset_for_request(request))
+    report_progress(12, "validation", "Validating the uploaded dataset contract.")
     validate_frames(frames)
+    report_progress(18, "analysis", "Preparing horizon-specific research analysis.")
 
     horizon_results, exclusions_by_horizon, cohort_size_by_horizon, feature_manifest = (
         train_comparison_models(
@@ -241,9 +296,12 @@ def _run_pipeline(request: JobRequest) -> JobResult:
             min_observations_per_variable=request.analysis_config.min_observations_per_variable,
             random_state=request.analysis_config.random_state,
             test_size=request.analysis_config.test_size,
+            progress_callback=report_progress,
         )
     )
+    report_progress(87, "decision", "Evaluating feasibility evidence.")
     decision = feasibility_decision(horizon_results)
+    report_progress(90, "report", "Building the research report.")
     report_json = build_report_payload(
         job_id=request.job_id,
         dataset_id=request.dataset_id,
@@ -262,6 +320,7 @@ def _run_pipeline(request: JobRequest) -> JobResult:
     report_markdown = build_markdown_report(report_json)
     report_references = ["inline:report_json", "inline:report_markdown"]
     if request.result_write_prefix:
+        report_progress(94, "artifacts", "Writing private report artifacts.")
         report_json_key = _result_key(
             request.job_id, request.result_write_prefix, "report.json"
         )
@@ -376,6 +435,9 @@ def _execute_job(request: JobRequest) -> None:
         JobStatus.RUNNING,
         message="Research analysis pipeline started.",
     )
+    job_store.update_progress(
+        request.job_id, 1, "starting", "Research analysis pipeline started."
+    )
     try:
         result = _run_pipeline(request)
         final_status = (
@@ -389,12 +451,18 @@ def _execute_job(request: JobRequest) -> None:
             message="Research analysis pipeline completed.",
             result=result,
         )
+        job_store.update_progress(
+            request.job_id, 100, "complete", "Research analysis pipeline completed."
+        )
     except (DatasetIngestionError, SchemaValidationError, ValueError) as exc:
         job = job_store.transition(
             request.job_id,
             JobStatus.FAILED,
             message="Input dataset validation failed.",
             error=str(exc),
+        )
+        job_store.update_progress(
+            request.job_id, 100, "failed", "Input dataset validation failed."
         )
     except Exception:
         logger.exception(
@@ -406,6 +474,9 @@ def _execute_job(request: JobRequest) -> None:
             message="Unhandled pipeline failure.",
             error="Pipeline execution failed. Inspect server logs for details.",
         )
+        job_store.update_progress(
+            request.job_id, 100, "failed", "Unhandled pipeline failure."
+        )
 
     _notify_callback(request, job)
 
@@ -413,7 +484,6 @@ def _execute_job(request: JobRequest) -> None:
 @app.post("/internal/jobs/run", response_model=JobStatusResponse)
 def run_job(
     request: JobRequest,
-    background_tasks: BackgroundTasks,
     _: Annotated[None, Depends(verify_shared_secret)],
 ) -> JobStatusResponse:
     """Queue a locked research job and return immediately for status polling."""
@@ -429,9 +499,13 @@ def run_job(
         return existing
 
     queued = job_store.create_or_reset(
-        request.job_id, message="Job accepted by worker."
+        request.job_id,
+        message=(
+            "Job accepted by worker. It will start when one of the "
+            f"{MAX_CONCURRENT_JOBS} processing slots is available."
+        ),
     )
-    background_tasks.add_task(_execute_job, request)
+    job_executor.submit(_execute_job, request)
     return queued
 
 
